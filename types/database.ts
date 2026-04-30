@@ -182,6 +182,7 @@ export interface WorkOrder {
   user_id: string;
   customer_id: string;
   unit_id: string;
+  service_template_id: string | null;
   invoice_number: number;
   status: WorkOrderStatus;
   tier: string;
