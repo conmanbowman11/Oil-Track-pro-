@@ -333,7 +333,7 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
         <div className="fld"><label>Phone</label><input value={form.phone || ''} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
       </div>
       <div className="fld"><label>Email</label><input value={form.email || ''} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
-      <div className="fld"><label>Billing Address</label><input value={form.billing_address || ''} onChange={e => setForm(p => ({ ...p, billing_address: e.target.value }))} /></div>
+      <div className="fld"><label>Billing Address</label><textarea value={form.billing_address || ''} onChange={e => setForm(p => ({ ...p, billing_address: e.target.value }))} placeholder="Street address&#10;City, State ZIP" style={{ minHeight: 60, fontFamily: "'Outfit',sans-serif" }} /></div>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
 
       <div className="section-hdr">Pricing & Fees (defaults for this customer)</div>
@@ -660,7 +660,7 @@ function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | n
         <div className="ch"><h3>Company Settings</h3></div>
         <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 14 }}>Your business info. This will appear on invoices and work orders.</p>
         <div className="fld"><label>Company Name</label><input value={form.company_name || ''} onChange={e => setForm(p => ({ ...p, company_name: e.target.value }))} /></div>
-        <div className="fld"><label>Address</label><textarea value={form.address || ''} onChange={e => setForm(p => ({ ...p, address: e.target.value }))} /></div>
+        <div className="fld"><label>Address</label><textarea value={form.address || ''} onChange={e => setForm(p => ({ ...p, address: e.target.value }))} placeholder="Street or PO Box&#10;City, State ZIP" style={{ minHeight: 60, fontFamily: "'Outfit',sans-serif" }} /></div>
         <div className="fr">
           <div className="fld"><label>Phone</label><input value={form.phone || ''} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
           <div className="fld"><label>Email</label><input value={form.email || ''} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
@@ -1161,7 +1161,7 @@ export default function OilTrackApp({ user }: { user: User }) {
         <div className="print-only print-header">
           <div className="co">
             <h1>{company?.company_name || 'Your Company'}</h1>
-            {company?.address && <p>{company.address}</p>}
+            {company?.address && <p style={{ whiteSpace: 'pre-wrap' }}>{company.address}</p>}
             {company?.phone && <p>Phone: {company.phone}</p>}
             {company?.email && <p>Email: {company.email}</p>}
             {company?.tax_id && <p>Tax ID: {company.tax_id}</p>}
