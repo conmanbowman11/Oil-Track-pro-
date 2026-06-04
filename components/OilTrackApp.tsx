@@ -1692,7 +1692,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     { id: 'parts', l: 'Parts Catalog', ic: iBox, ct: parts.length },
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
-    { id: 'billing', l: 'BILLING ✓✓✓', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
+    { id: 'billing', l: 'Billing', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
     { id: 'history', l: 'Service History', ic: iHist },
     { id: 'ai', l: 'AI Assistant', ic: iChat },
     { id: 'settings', l: 'Settings', ic: iGear },
