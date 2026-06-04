@@ -163,98 +163,98 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 .print-only{display:none}
 .fees-print-only{display:none}
 
-/* ===== PRINT STYLES — clean, envelope-compatible, single-page invoice ===== */
+/* ===== PRINT STYLES (QuickBooks-style invoice — window envelope ready, single page) ===== */
 @page{size:letter;margin:0.4in 0.5in 0.4in 0.5in}
 @media print{
-  /* ---- HIDE: everything that is not the work order content ---- */
+  /* ---- HIDE: app chrome ---- */
   .sb,.topbar,.crumbs,.ab,.tklist-item,.psearchres,.tplist-item .qty input,.runtpl,.tpcard{display:none!important}
   .btn,button{display:none!important}
-  .wh{display:none!important}              /* screen-only work-order header */
-  .wi{display:none!important}              /* screen-only details grid */
-  .ck{display:none!important}              /* checkboxes */
+  .wh{display:none!important}
+  .wi{display:none!important}
+  .ck{display:none!important}
   .no-print,.cr.no-print{display:none!important}
   .wo input,.wo textarea,.wo select{display:none!important}
-  .screen-only-oil{display:none!important} /* oil is now a row in parts table */
-  .wo-complete{display:none!important}     /* hide the "Complete Work Order" button + unchecked warning */
-  .wo-notes-empty{display:none!important}  /* hide Notes section when empty */
-  .toast{display:none!important}           /* hide toast notifications */
-  .cost-edit-grid{display:none!important}  /* hide editable fees grid */
-  .ws.cost-section > div[style*="grid-template-columns"]{display:none!important}
+  /* hide screen-only oil block (it's now a row in the parts table for print) */
+  .screen-only-oil{display:none!important}
 
-  /* ---- BASE RESET ---- */
+  /* ---- LAYOUT RESET ---- */
   body,html{background:#fff!important;color:#000!important;font-size:10pt;font-family:'Outfit',sans-serif}
   .app{display:block!important;height:auto!important;overflow:visible!important}
   .mn{overflow:visible!important;height:auto!important}
   .area{padding:0!important;overflow:visible!important;height:auto!important}
-  .wo{border:none!important;border-radius:0!important;padding:0!important;background:#fff!important;position:relative;display:block!important}
+  .wo{border:none!important;border-radius:0!important;padding:0!important;background:#fff!important;position:relative;min-height:10in}
+
+  /* ---- PRINT HEADER (small return address top-left + INVOICE top-right) ---- */
   .print-only{display:block!important}
-  .fees-print-only{display:block!important}
-
-  /* ============================================================
-     LAYOUT MAP (top to bottom on the page):
-     0.00in - 0.45in : Return address top-left | INVOICE top-right
-     2.00in - 3.00in : BILL TO (window envelope visible area)
-     3.30in+         : Equipment, Work Performed, Parts, Cost, Notes
-     bottom          : Company contact footer
-     ============================================================ */
-
-  /* ---- 1. HEADER ROW: return address (left) + INVOICE label (right) ---- */
-  .print-header{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start}
-  .print-header .co h1{font-size:9.5pt;font-weight:600;color:#000;margin:0 0 1pt 0;letter-spacing:0}
+  .print-header{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:0;border:none!important;margin:0!important}
+  .print-header .co h1{font-size:9.5pt;font-weight:600;color:#000;letter-spacing:0;margin:0 0 1pt 0}
   .print-header .co p{font-size:8pt;color:#444;margin:0;line-height:1.25;white-space:pre-wrap}
-  .print-header .co p:nth-of-type(n+2){display:none}  /* address only, no phone/email here */
+  .print-header .co p:nth-of-type(n+2){display:none}  /* only show address line, not phone/email/tax (those go to footer) */
   .print-header .inv{text-align:right}
-  .print-header .inv .lbl{font-size:14pt;font-weight:500;color:#000;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1pt}
+  .print-header .inv .lbl{font-size:14pt;font-weight:500;color:#000;letter-spacing:0.1em;margin-bottom:1pt;text-transform:uppercase}
   .print-header .inv .num{font-size:11pt;font-weight:600;font-family:'IBM Plex Mono',monospace;color:#000;margin-bottom:1pt}
   .print-header .inv .date{font-size:8.5pt;color:#444;line-height:1.3}
 
-  /* ---- 2. BILL TO BLOCK — positioned for #10 standard window envelope ---- */
-  /* #10 window envelope: window is 4.5" wide x 1.125" tall, positioned 0.875" from left edge, 0.5" from bottom of envelope */
-  /* When letter paper is folded in thirds and inserted, the window aligns to approximately top:2.0in, left:0.875in on the unfolded page */
-  /* @page margin is 0.4in top, 0.5in left, so we offset from there */
-  .print-billto{position:absolute;top:1.6in;left:0.375in;width:4in;display:block;margin:0;padding:0}
-  .print-billto .lbl{font-size:7.5pt;color:#888;text-transform:uppercase;letter-spacing:0.08em;font-weight:500;margin-bottom:4pt;border:none;padding:0}
-  .print-billto p{font-size:10.5pt;line-height:1.35;margin:0;color:#000}
-  .print-billto p strong{font-weight:600}
+  /* ---- BILL TO (positioned for #10 window envelope) ---- */
+  /* Window envelope window: ~4.125" wide x 1.125" tall, positioned ~0.5" from left, ~2.25" from top of folded page */
+  /* Page folds in thirds. The window position when folded means: ~1.85" from top of unfolded page, 0.875" from left */
+  .print-billto{position:absolute;top:1.7in;left:0.375in;width:4in;display:block;margin:0;padding:0}
+  .print-billto > div:nth-child(2){display:none}  /* hide the equipment block here — rendered separately below */
+  .print-billto .lbl{font-size:7.5pt;color:#888;text-transform:uppercase;letter-spacing:0.08em;font-weight:500;margin-bottom:3pt;border:none;padding:0}
+  .print-billto p{font-size:10pt;line-height:1.3;margin:0}
 
-  /* ---- 3. MAIN CONTENT — pushed below the envelope window area ---- */
-  .wo-details{margin-top:3.3in!important}
-  .ws{padding:0!important;border-bottom:none!important;page-break-inside:avoid;margin-bottom:10pt}
+  /* ---- MAIN CONTENT (starts below envelope window) ---- */
+  /* Reorder sections in print: Details → Work Performed → Parts → Cost Breakdown → Notes */
+  .wo{display:flex;flex-direction:column}
+  .wo .ws:nth-child(1){order:1}  /* Details (Equipment) */
+  .wo .ws:nth-child(2){order:3}  /* Parts */
+  .wo .ws:nth-child(3){order:4}  /* Oil (screen-only, hidden) */
+  .wo .ws:nth-child(4){order:2}  /* Work Performed - moved up */
+  .wo .ws:nth-child(5){order:5}  /* Cost Breakdown */
+  .wo .ws:nth-child(6){order:6}  /* Notes */
+  .ws{padding:0!important;border-bottom:none!important;page-break-inside:avoid;margin-bottom:8pt}
+  .ws:nth-child(1){margin-top:3.4in}  /* push first .ws (Details) below the envelope window */
+  .print-equipment p{font-size:9.5pt;margin:0;line-height:1.4;color:#000!important}
   .ws h4{font-size:7.5pt!important;font-weight:500!important;text-transform:uppercase;letter-spacing:0.08em;color:#888!important;margin:0 0 4pt 0!important;padding:0 0 3pt 0!important;border-bottom:0.5pt solid #999;page-break-after:avoid}
-  .print-equipment p{font-size:10pt;margin:0;line-height:1.4;color:#000!important}
 
-  /* ---- 4. WORK PERFORMED — compact paragraph ---- */
-  .wk{display:inline!important;padding:0!important;border:none!important;background:transparent!important;font-size:8.5pt;line-height:1.4;color:#000!important}
+  /* ---- EQUIPMENT (compact one-liner) ---- */
+  /* The first .ws is the equipment block. Render its content as one line via the .wi spec below — but .wi is hidden, so we use the screen content */
+  /* Actually the screen has equipment in a separate area; use Bill To's right column instead */
+
+  /* ---- PARTS TABLE (roomy QB style with oil row) ---- */
+  table{width:100%;border-collapse:collapse;font-size:9.5pt;page-break-inside:auto}
+  thead{display:table-header-group}
+  th{text-align:left;font-size:7pt;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:#000!important;border-bottom:0.75pt solid #000;padding:5pt 6pt!important;background:#fff!important}
+  th:nth-child(4),th:nth-child(5),th:nth-child(6){text-align:right}
+  td{padding:5pt 6pt!important;border-bottom:0.25pt solid #ddd;font-size:9.5pt;color:#000!important;background:#fff!important;vertical-align:top}
+  tr{page-break-inside:avoid;page-break-after:auto}
+  td:nth-child(4),td:nth-child(5),td:nth-child(6){text-align:right;font-family:'IBM Plex Mono',monospace}
+  /* Supplier badges — flatten in print, show as plain text */
+  .tag,.tag.tb{background:transparent!important;color:#000!important;border:none!important;padding:0!important;font-size:9.5pt!important;font-weight:400}
+
+  /* ---- WORK PERFORMED (compact paragraph style) ---- */
+  .wk{display:inline!important;padding:0!important;border:none!important;background:transparent!important;font-size:9pt;line-height:1.4;color:#000!important}
   .wk:not(:last-child)::after{content:" · ";color:#666}
   .wk span{display:inline!important;text-decoration:none!important;color:#000!important}
   .wk span[style*="line-through"]{text-decoration:none!important}
   .wk div{display:none!important}
 
-  /* ---- 5. PARTS TABLE (with oil as last row) ---- */
-  table{width:100%;border-collapse:collapse;font-size:9pt;page-break-inside:auto}
-  thead{display:table-header-group}
-  th{text-align:left;font-size:7pt;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:#000!important;border-bottom:0.75pt solid #000;padding:4pt 5pt!important;background:#fff!important}
-  th:nth-child(4),th:nth-child(5),th:nth-child(6){text-align:right}
-  td{padding:4pt 5pt!important;border-bottom:0.25pt solid #ddd;font-size:9pt;color:#000!important;background:#fff!important;vertical-align:top}
-  tr{page-break-inside:avoid;page-break-after:auto}
-  td:nth-child(4),td:nth-child(5),td:nth-child(6){text-align:right;font-family:'IBM Plex Mono',monospace}
-  .tag,.tag.tb{background:transparent!important;color:#000!important;border:none!important;padding:0!important;font-size:9pt!important;font-weight:400}
-
-  /* ---- 6. COST BREAKDOWN — every fee broken out, right-aligned ---- */
-  /* Allow cost breakdown to flow to page 2 if parts table is long. Try to keep it together with TOTAL. */
-  .ws.cost-section{margin-top:14pt;page-break-inside:avoid}
-  .cr{display:flex;justify-content:space-between;font-size:8.5pt;padding:1.5pt 0;width:50%;margin-left:auto;color:#000!important}
+  /* ---- COST BREAKDOWN (every fee broken out, right-aligned) ---- */
+  .ws.cost-section{margin-top:14pt;page-break-before:auto}
+  /* hide the editable input grid (only screen view shows it) */
+  .ws.cost-section > div[style*="grid-template-columns"],.cost-edit-grid{display:none!important}
+  /* show fees-print-only block in print (hidden on screen by .fees-print-only base rule) */
+  .fees-print-only{display:block!important}
+  .cr{display:flex;justify-content:space-between;font-size:9.5pt;padding:2pt 0;width:50%;margin-left:auto;color:#000!important}
   .cr span:first-child{text-transform:capitalize}
   .cr .m,.cr span:last-child{font-family:'IBM Plex Mono',monospace}
-  .cr.tot{font-size:11.5pt;font-weight:600;border-top:1.5pt solid #000;border-bottom:2.5pt double #000;padding:4pt 0;margin-top:4pt;color:#000!important}
+  .cr.tot{font-size:12pt;font-weight:500;border-top:1.5pt solid #000;border-bottom:2.5pt double #000;padding:5pt 0;margin-top:4pt;color:#000!important}
 
-  /* ---- 7. NOTES ---- */
-  .wo-notes p{font-size:9.5pt;line-height:1.4;color:#000!important;margin:0}
+  /* ---- NOTES ---- */
+  .ws p{font-size:9pt;line-height:1.4;color:#000!important;margin:0}
 
-  /* ---- 8. COMPANY CONTACT FOOTER — appears at the bottom of the last page (or only page) ---- */
-  /* Using normal flow with margin-top:auto isn't possible without flex, and fixed positioning would repeat on every page */
-  /* Solution: position at bottom of document flow with a top margin push */
-  .print-company-footer{margin-top:20pt;padding-top:5pt;border-top:0.5pt solid #999;text-align:center;font-size:8pt;color:#666;line-height:1.35;page-break-before:avoid}
+  /* ---- COMPANY CONTACT FOOTER (per partner request: move to bottom) ---- */
+  .print-company-footer{position:fixed;bottom:0.2in;left:0.5in;right:0.5in;padding-top:5pt;border-top:0.5pt solid #999;text-align:center;font-size:8pt;color:#666;line-height:1.35}
 }
 `;
 
@@ -863,6 +863,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const iOut = 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4 M16 17l5-5-5-5 M21 12H9';
   const iTrash = 'M3 6h18 M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6 M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2';
   const iUnlock = 'M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2z M7 11V7a5 5 0 019.9-1';
+  const iBill = 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8';
 
   async function handleSignOut() { const supabase = createClient(); await supabase.auth.signOut(); }
 
@@ -1143,6 +1144,11 @@ export default function OilTrackApp({ user }: { user: User }) {
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { status: 'open', completed_at: null as any } });
       showToast('Work order unlocked for editing');
     };
+    const toggleBilled = () => {
+      const nowBilled = !(wo as any).billed;
+      updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { billed: nowBilled, billed_at: nowBilled ? new Date().toISOString() : null as any } as any });
+      showToast(nowBilled ? 'Marked as billed' : 'Marked as unbilled');
+    };
     const handleDelete = async () => {
       try { await deleteWorkOrder.mutateAsync(wo.work_order_id); showToast('Work order deleted'); back(); }
       catch (err: any) { showToast('Failed to delete: ' + (err?.message || 'Unknown error'), true); }
@@ -1179,6 +1185,15 @@ export default function OilTrackApp({ user }: { user: User }) {
             <p><strong>{c?.name}</strong></p>
             {c?.contact_name && <p>{c.contact_name}</p>}
             {c?.billing_address && <p style={{ whiteSpace: 'pre-wrap' }}>{c.billing_address}</p>}
+            {c?.phone && <p>Phone: {c.phone}</p>}
+            {c?.email && <p>{c.email}</p>}
+          </div>
+          <div>
+            <div className="lbl">Equipment</div>
+            <p><strong>{u?.unit_number}</strong> — {u?.nickname || u?.type}</p>
+            {u?.make && <p>{u.make} {u.model}</p>}
+            {u?.serial_number && <p>S/N: {u.serial_number}</p>}
+            {e?.name && <p>Engine: {e.name}</p>}
           </div>
         </div>
 
@@ -1190,9 +1205,17 @@ export default function OilTrackApp({ user }: { user: User }) {
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", background: isOpen ? 'var(--am2)' : 'var(--gn2)', color: isOpen ? 'var(--am)' : 'var(--gn)' }}>{wo.status.toUpperCase()}</span>
+            {!isOpen && (
+              <span style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", background: (wo as any).billed ? 'var(--bl2)' : 'var(--am2)', color: (wo as any).billed ? 'var(--bl)' : 'var(--am)' }}>{(wo as any).billed ? 'BILLED' : 'UNBILLED'}</span>
+            )}
             <button className="btn bs" onClick={() => setModal({ t: 'editInvoiceNumber', wo })} title="Edit invoice number">
               {IC(iEdit, 13)} INV #
             </button>
+            {!isOpen && (
+              <button className={`btn bs ${(wo as any).billed ? 'bg' : 'bp'}`} onClick={toggleBilled} title={(wo as any).billed ? 'Mark as unbilled' : 'Mark as billed'}>
+                {IC(iChk, 13)} {(wo as any).billed ? 'Mark Unbilled' : 'Mark Billed'}
+              </button>
+            )}
             {!isOpen && (
               <button className="btn bs bwarn" onClick={reopen} title="Re-open this work order to edit it">
                 {IC(iUnlock, 13)} Unlock
@@ -1247,23 +1270,6 @@ export default function OilTrackApp({ user }: { user: User }) {
           </div>
         </div>
 
-        <div className="ws wo-work">
-          <h4>Work Performed</h4>
-          {wo.checklist.map((it, i) => (
-            <div key={i} className="wk">
-              {isOpen ? (<div className={`ck${it.done ? ' on' : ''}`} onClick={() => togChecklist(i)}>{it.done && IC(iChk, 14)}</div>) :
-                (<div style={{ width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: it.done ? 'var(--gn)' : 'var(--tx3)', fontSize: 14 }}>{it.done ? '\u2713' : '\u25CB'}</div>)}
-              <span style={{ flex: 1, textDecoration: it.done ? 'line-through' : 'none', color: it.done ? 'var(--tx3)' : 'inherit' }}>{it.text}</span>
-            </div>
-          ))}
-          {isOpen && (
-            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              <input value={newItem} onChange={ev => setNewItem(ev.target.value)} onKeyDown={ev => ev.key === 'Enter' && addChecklistItem()} placeholder="Add checklist item..." style={{ flex: 1, padding: '6px 10px', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 12, fontFamily: "'Outfit',sans-serif", background: 'var(--bg)', outline: 'none' }} />
-              <button className="btn bs" onClick={addChecklistItem}>{IC(iPlus, 15)}</button>
-            </div>
-          )}
-        </div>
-
         {!wo.customer_provided_filters && (wo.parts_used.length > 0 || wo.oil_used) && (
           <div className="ws wo-parts">
             <h4>Parts / Filter Order</h4>
@@ -1303,6 +1309,23 @@ export default function OilTrackApp({ user }: { user: User }) {
             </div>
           </div>
         )}
+
+        <div className="ws wo-work">
+          <h4>Work Performed</h4>
+          {wo.checklist.map((it, i) => (
+            <div key={i} className="wk">
+              {isOpen ? (<div className={`ck${it.done ? ' on' : ''}`} onClick={() => togChecklist(i)}>{it.done && IC(iChk, 14)}</div>) :
+                (<div style={{ width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: it.done ? 'var(--gn)' : 'var(--tx3)', fontSize: 14 }}>{it.done ? '\u2713' : '\u25CB'}</div>)}
+              <span style={{ flex: 1, textDecoration: it.done ? 'line-through' : 'none', color: it.done ? 'var(--tx3)' : 'inherit' }}>{it.text}</span>
+            </div>
+          ))}
+          {isOpen && (
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <input value={newItem} onChange={ev => setNewItem(ev.target.value)} onKeyDown={ev => ev.key === 'Enter' && addChecklistItem()} placeholder="Add checklist item..." style={{ flex: 1, padding: '6px 10px', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 12, fontFamily: "'Outfit',sans-serif", background: 'var(--bg)', outline: 'none' }} />
+              <button className="btn bs" onClick={addChecklistItem}>{IC(iPlus, 15)}</button>
+            </div>
+          )}
+        </div>
 
         {/* COST BREAKDOWN — gets its own page in print */}
         <div className="ws cost-section">
@@ -1439,6 +1462,74 @@ export default function OilTrackApp({ user }: { user: User }) {
           </table>
         )}
       </div>
+    );
+  };
+
+  const renderBilling = () => {
+    const completed = workOrders.filter(w => w.status === 'complete');
+    const unbilled = completed.filter(w => !(w as any).billed);
+    const billed = completed.filter(w => (w as any).billed);
+    const unbilledTotal = unbilled.reduce((s, w) => s + (w.total_retail || 0), 0);
+    const billedTotal = billed.reduce((s, w) => s + (w.total_retail || 0), 0);
+
+    const markBilled = (w: WorkOrder, nowBilled: boolean) => {
+      updateWorkOrder.mutate({ work_order_id: w.work_order_id, updates: { billed: nowBilled, billed_at: nowBilled ? new Date().toISOString() : null as any } as any });
+      showToast(nowBilled ? 'Marked as billed' : 'Marked as unbilled');
+    };
+
+    return (
+      <>
+        <div className="stats">
+          <div className="st"><div className="st-l">Unbilled WOs</div><div className="st-v" style={{ color: unbilled.length ? 'var(--am)' : 'var(--gn)' }}>{unbilled.length}</div></div>
+          <div className="st"><div className="st-l">Outstanding</div><div className="st-v" style={{ color: 'var(--am)' }}>${Math.round(unbilledTotal).toLocaleString()}</div></div>
+          <div className="st"><div className="st-l">Billed WOs</div><div className="st-v" style={{ color: 'var(--bl)' }}>{billed.length}</div></div>
+          <div className="st"><div className="st-l">Billed Total</div><div className="st-v">${Math.round(billedTotal).toLocaleString()}</div></div>
+        </div>
+
+        <div className="card">
+          <div className="ch"><h3>Unbilled — Needs Invoicing ({unbilled.length})</h3></div>
+          {unbilled.length === 0 ? <div className="empty"><p>All caught up! Nothing waiting to be billed.</p></div> : (
+            <table>
+              <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
+              <tbody>
+                {unbilled.map(w => (
+                  <tr key={w.work_order_id}>
+                    <td className="m" style={{ fontWeight: 700, cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>{formatInvoiceNumber(w.invoice_number)}</td>
+                    <td className="m">{w.service_date}</td>
+                    <td>{getCustomer(w.customer_id)?.name}</td>
+                    <td style={{ fontWeight: 600, color: 'var(--ac)' }}>{getUnit(w.unit_id)?.unit_number}</td>
+                    <td><span className="tag tc">{w.tier}</span></td>
+                    <td className="m" style={{ fontWeight: 600 }}>{formatMoney(w.total_retail)}</td>
+                    <td><button className="btn bs bp" onClick={() => markBilled(w, true)}>{IC(iChk, 13)} Billed</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="ch"><h3>Billed ({billed.length})</h3></div>
+          {billed.length === 0 ? <div className="empty"><p>Nothing billed yet</p></div> : (
+            <table>
+              <thead><tr><th>Invoice #</th><th>Billed On</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
+              <tbody>
+                {billed.map(w => (
+                  <tr key={w.work_order_id}>
+                    <td className="m" style={{ fontWeight: 700, cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>{formatInvoiceNumber(w.invoice_number)}</td>
+                    <td className="m">{(w as any).billed_at ? new Date((w as any).billed_at).toLocaleDateString() : '—'}</td>
+                    <td>{getCustomer(w.customer_id)?.name}</td>
+                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
+                    <td><span className="tag tc">{w.tier}</span></td>
+                    <td className="m">{formatMoney(w.total_retail)}</td>
+                    <td><button className="btn bs bg" onClick={() => markBilled(w, false)}>Undo</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
     );
   };
 
@@ -1601,6 +1692,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     { id: 'parts', l: 'Parts Catalog', ic: iBox, ct: parts.length },
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
+    { id: 'billing', l: 'Billing', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
     { id: 'history', l: 'Service History', ic: iHist },
     { id: 'ai', l: 'AI Assistant', ic: iChat },
     { id: 'settings', l: 'Settings', ic: iGear },
@@ -1629,6 +1721,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     dashboard: renderDashboard, customers: renderCustomers, cust: renderCustDetail,
     unit: renderUnitDetail, wo: renderWO, workorders: renderWOs, history: renderHistory,
     parts: renderParts, engines: renderEngines, settings: renderSettings, ai: renderAi,
+    billing: renderBilling,
   };
 
   return (
