@@ -257,6 +257,27 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
   /* ---- COMPANY CONTACT FOOTER (per partner request: move to bottom) ---- */
   .print-company-footer{position:fixed;bottom:0.2in;left:0.5in;right:0.5in;padding-top:5pt;border-top:0.5pt solid #999;text-align:center;font-size:8pt;color:#666;line-height:1.35}
 }
+
+/* ===== OIL ANALYSIS SLIPS ===== */
+.oil-slips-print{position:fixed;inset:0;background:#f0eee8;z-index:9999;overflow:auto;padding:24px}
+.oil-slips-actions{display:flex;gap:10px;justify-content:center;margin-bottom:18px}
+.oil-slip{width:7.5in;max-width:100%;margin:0 auto 14px;border:2px solid #000;background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif;page-break-inside:avoid;break-inside:avoid;display:flex;flex-direction:column}
+.oil-slip-hd{display:flex;justify-content:space-between;align-items:baseline;padding:4px 8px;border-bottom:1.5px solid #000}
+.oil-slip-hd b{font-size:11.5px;letter-spacing:.5px}
+.oil-slip-hd span{font-size:8.5px}
+.osrow{display:grid;border-bottom:1px solid #000}
+.oil-slip .osrow:last-child{border-bottom:none}
+.oscell{border-right:1px solid #000;padding:2px 5px;min-height:29px}
+.oscell:last-child{border-right:none}
+.osl{display:block;font-size:6.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#333}
+.osv{display:block;font-size:10.5px;font-weight:600;min-height:13px}
+body.printing-oil-slips .app{display:none}
+@media print{
+  body.printing-oil-slips .app{display:none!important}
+  .oil-slips-print{position:static!important;padding:0!important;overflow:visible!important;background:#fff!important}
+  .oil-slips-actions{display:none!important}
+  .oil-slip{margin:0 0 0.15in 0;width:100%}
+}
 `;
 
 // =============================================
@@ -726,7 +747,14 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [aiLoad, setAiLoad] = useState(false);
   const [newItem, setNewItem] = useState('');
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
+  const [selectedOilSlips, setSelectedOilSlips] = useState<string[]>([]);
+  const [showOilSlips, setShowOilSlips] = useState(false);
   const aiRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.body.classList.toggle('printing-oil-slips', showOilSlips);
+    return () => document.body.classList.remove('printing-oil-slips');
+  }, [showOilSlips]);
 
   const showToast = (msg: string, err = false) => { setToast({ msg, err }); setTimeout(() => setToast(null), err ? 4000 : 2500); };
 
@@ -866,6 +894,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const iTrash = 'M3 6h18 M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6 M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2';
   const iUnlock = 'M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2z M7 11V7a5 5 0 019.9-1';
   const iBill = 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8';
+  const iDrop = 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z';
 
   async function handleSignOut() { const supabase = createClient(); await supabase.auth.signOut(); }
 
@@ -1402,6 +1431,130 @@ export default function OilTrackApp({ user }: { user: User }) {
     );
   };
 
+  // ===== OIL ANALYSIS SLIPS =====
+  const fluidHoursFor = (wo: WorkOrder): number | null => {
+    if (!wo.engine_hours || wo.engine_hours <= 0) return null;
+    const prior = workOrders
+      .filter(w => w.unit_id === wo.unit_id && w.work_order_id !== wo.work_order_id && (w.engine_hours || 0) > 0 && w.service_date < wo.service_date)
+      .sort((a, b) => b.service_date.localeCompare(a.service_date))[0];
+    if (!prior) return null;
+    const diff = wo.engine_hours - (prior.engine_hours || 0);
+    return diff > 0 ? diff : null;
+  };
+
+  const needsOilSlip = (w: WorkOrder) =>
+    w.status === 'complete' && (
+      ((w.fees as any)?.oil_sample_fee || 0) > 0 ||
+      w.parts_used.some(p => {
+        const cat = getPart(p.part_number)?.category || '';
+        return cat === 'Lab/Testing' || /oil\s*(analysis|sample)|s\W?o\W?s/i.test(p.description || '');
+      })
+    );
+
+  const fmtDateUS = (d: string) => {
+    const [y, m, dd] = (d || '').split('-');
+    return m && dd ? `${m}/${dd}/${y}` : d;
+  };
+
+  const toggleSlip = (id: string) => setSelectedOilSlips(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const printOilSlips = () => { setShowOilSlips(true); setTimeout(() => window.print(), 350); };
+  const markSlipsPrinted = async (ids: string[], printed: boolean) => {
+    try {
+      for (const id of ids) {
+        await updateWorkOrder.mutateAsync({ work_order_id: id, updates: { oil_slip_printed: printed, oil_slip_printed_at: printed ? new Date().toISOString() : null } as any });
+      }
+      showToast(printed ? `${ids.length} slip${ids.length === 1 ? '' : 's'} marked printed` : 'Moved back to pending');
+    } catch (err: any) { showToast('Failed: ' + (err?.message || 'Unknown error'), true); }
+  };
+
+  const renderOilSlip = (wo: WorkOrder) => {
+    const u = getUnit(wo.unit_id);
+    const e = u ? getEngine(u.engine_id) : undefined;
+    const fluidHrs = fluidHoursFor(wo);
+    const galsRaw = wo.oil_used?.gallons ?? 0;
+    const gal = Math.floor(galsRaw);
+    const qt = Math.round((galsRaw - gal) * 4);
+    return (
+      <div className="oil-slip" key={wo.work_order_id}>
+        <div className="oil-slip-hd">
+          <b>OIL ANALYSIS SAMPLE</b>
+          <span>{company?.phone || ''}</span>
+        </div>
+        <div className="osrow" style={{ gridTemplateColumns: '1.7fr 0.9fr 1.6fr 0.9fr' }}>
+          <div className="oscell"><span className="osl">Company Name</span><span className="osv">{company?.company_name || 'Complete Fleet Solutions, LLC'}</span></div>
+          <div className="oscell"><span className="osl">Date</span><span className="osv">{fmtDateUS(wo.service_date)}</span></div>
+          <div className="oscell"><span className="osl">Serial #</span><span className="osv">{u?.serial_number || ''}</span></div>
+          <div className="oscell"><span className="osl">Unit #</span><span className="osv">{u?.unit_number || ''}</span></div>
+        </div>
+        <div className="osrow" style={{ gridTemplateColumns: '1fr 1fr 1.1fr 1.2fr 1fr' }}>
+          <div className="oscell"><span className="osl">Equip Hrs</span><span className="osv">{wo.engine_hours > 0 ? wo.engine_hours.toLocaleString() : ''}</span></div>
+          <div className="oscell"><span className="osl">Fluid Hrs</span><span className="osv">{fluidHrs != null ? fluidHrs.toLocaleString() : ''}</span></div>
+          <div className="oscell"><span className="osl">Oil Added</span><span className="osv">{galsRaw > 0 ? `${gal} GAL ${qt} QT` : ''}</span></div>
+          <div className="oscell"><span className="osl">Oil Brand / WT</span><span className="osv">{wo.oil_used?.type || e?.oil_type || ''}</span></div>
+          <div className="oscell"><span className="osl">Compartment</span><span className="osv">ENGINE</span></div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderOilSlipsPage = () => {
+    const eligible = workOrders.filter(needsOilSlip);
+    const pending = eligible.filter(w => !(w as any).oil_slip_printed);
+    const printed = eligible.filter(w => (w as any).oil_slip_printed);
+    return (
+      <>
+        <div className="card">
+          <div className="ch">
+            <h3>Pending Slips ({pending.length})</h3>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn bs bg" onClick={() => setSelectedOilSlips(pending.map(w => w.work_order_id))}>Select all</button>
+              <button className="btn bs bg" onClick={() => setSelectedOilSlips([])}>Clear</button>
+              <button className="btn bs bp" disabled={selectedOilSlips.length === 0} onClick={printOilSlips}>{IC(iPrint, 14)} Print Slips ({selectedOilSlips.length})</button>
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Completed work orders with an oil analysis. Select, print, then mark printed.</p>
+          {pending.length === 0 ? <div className="empty"><p>No pending oil slips</p></div> : (
+            <table>
+              <thead><tr><th style={{ width: 30 }}></th><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th></th></tr></thead>
+              <tbody>
+                {pending.map(w => (
+                  <tr key={w.work_order_id} onClick={() => toggleSlip(w.work_order_id)} style={{ cursor: 'pointer' }}>
+                    <td><input type="checkbox" checked={selectedOilSlips.includes(w.work_order_id)} readOnly style={{ pointerEvents: 'none', accentColor: 'var(--ac)' }} /></td>
+                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
+                    <td className="m">{fmtDateUS(w.service_date)}</td>
+                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
+                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                    <td onClick={ev => ev.stopPropagation()}><button className="btn bs" onClick={() => markSlipsPrinted([w.work_order_id], true)}>{IC(iChk, 13)} Printed</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="card">
+          <div className="ch"><h3>Printed ({printed.length})</h3></div>
+          {printed.length === 0 ? <div className="empty"><p>None yet</p></div> : (
+            <table>
+              <thead><tr><th>Invoice #</th><th>Service Date</th><th>Unit</th><th>Customer</th><th>Printed</th><th></th></tr></thead>
+              <tbody>
+                {printed.slice(0, 30).map(w => (
+                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
+                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
+                    <td className="m">{fmtDateUS(w.service_date)}</td>
+                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
+                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                    <td className="m">{(w as any).oil_slip_printed_at ? new Date((w as any).oil_slip_printed_at).toLocaleDateString() : '—'}</td>
+                    <td onClick={ev => ev.stopPropagation()}><button className="btn bs bg" onClick={() => markSlipsPrinted([w.work_order_id], false)}>Undo</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    );
+  };
+
   const renderWOs = () => {
     const open = workOrders.filter(w => w.status === 'open');
     const done = workOrders.filter(w => w.status === 'complete');
@@ -1705,6 +1858,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
     { id: 'billing', l: 'Billing', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
+    { id: 'oilslips', l: 'Oil Slips', ic: iDrop, ct: workOrders.filter(w => needsOilSlip(w) && !(w as any).oil_slip_printed).length || undefined },
     { id: 'history', l: 'Service History', ic: iHist },
     { id: 'ai', l: 'AI Assistant', ic: iChat },
     { id: 'settings', l: 'Settings', ic: iGear },
@@ -1733,7 +1887,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     dashboard: renderDashboard, customers: renderCustomers, cust: renderCustDetail,
     unit: renderUnitDetail, wo: renderWO, workorders: renderWOs, history: renderHistory,
     parts: renderParts, engines: renderEngines, settings: renderSettings, ai: renderAi,
-    billing: renderBilling,
+    billing: renderBilling, oilslips: renderOilSlipsPage,
   };
 
   return (
@@ -1764,6 +1918,16 @@ export default function OilTrackApp({ user }: { user: User }) {
         {renderModal()}
         {toast && <div className={`toast${toast.err ? ' err' : ''}`}>{toast.msg}</div>}
       </div>
+      {showOilSlips && (
+        <div className="oil-slips-print">
+          <div className="oil-slips-actions">
+            <button className="btn bp" onClick={() => window.print()}>{IC(iPrint, 15)} Print Again</button>
+            <button className="btn" onClick={async () => { await markSlipsPrinted(selectedOilSlips, true); setSelectedOilSlips([]); setShowOilSlips(false); }}>{IC(iChk, 15)} Mark Printed & Close</button>
+            <button className="btn bg" onClick={() => setShowOilSlips(false)}>Close</button>
+          </div>
+          {workOrders.filter(w => selectedOilSlips.includes(w.work_order_id)).map(renderOilSlip)}
+        </div>
+      )}
     </>
   );
 }
