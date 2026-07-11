@@ -838,7 +838,7 @@ export default function OilTrackApp({ user }: { user: User }) {
         status: 'open', tier: template.name, service_date: new Date().toISOString().split('T')[0],
         engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: custOil, notes: '',
         parts_used: partsUsed, oil_used: oil, fees, tax_rate_percent, ...totals, checklist,
-      });
+      } as any);
       return wo.work_order_id;
     } catch (err: any) {
       showToast(`Failed: ${err?.message || 'Unknown error'}`, true);
@@ -865,7 +865,7 @@ export default function OilTrackApp({ user }: { user: User }) {
         service_date: new Date().toISOString().split('T')[0],
         engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: !!(customer as any).provides_own_oil, notes: '',
         parts_used: [], oil_used: null, fees, tax_rate_percent, ...totals, checklist: [],
-      });
+      } as any);
       return wo.work_order_id;
     } catch (err: any) { showToast(`Failed: ${err?.message || 'Unknown error'}`, true); return null; }
   }
