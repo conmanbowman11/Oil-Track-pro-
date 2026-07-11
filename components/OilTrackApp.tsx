@@ -1432,11 +1432,12 @@ export default function OilTrackApp({ user }: { user: User }) {
   };
 
   // ===== OIL ANALYSIS SLIPS =====
+  const woSeq = (w: WorkOrder) => `${w.service_date}|${String(w.invoice_number ?? 0).padStart(10, '0')}`;
   const fluidHoursFor = (wo: WorkOrder): number | null => {
     if (!wo.engine_hours || wo.engine_hours <= 0) return null;
     const prior = workOrders
-      .filter(w => w.unit_id === wo.unit_id && w.work_order_id !== wo.work_order_id && (w.engine_hours || 0) > 0 && w.service_date < wo.service_date)
-      .sort((a, b) => b.service_date.localeCompare(a.service_date))[0];
+      .filter(w => w.unit_id === wo.unit_id && w.work_order_id !== wo.work_order_id && (w.engine_hours || 0) > 0 && woSeq(w) < woSeq(wo))
+      .sort((a, b) => woSeq(b).localeCompare(woSeq(a)))[0];
     if (!prior) return null;
     const diff = wo.engine_hours - (prior.engine_hours || 0);
     return diff > 0 ? diff : null;
