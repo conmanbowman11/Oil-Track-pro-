@@ -271,12 +271,15 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 .oscell:last-child{border-right:none}
 .osl{display:block;font-size:6.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#333}
 .osv{display:block;font-size:10.5px;font-weight:600;min-height:13px}
+.osinput{display:block;border:none;outline:none;width:100%;background:#fff8e8;font-family:inherit;font-size:10.5px;font-weight:600;color:#000;padding:0;min-height:13px}
+.osinput:focus{background:#ffefc4}
 body.printing-oil-slips .app{display:none}
 @media print{
   body.printing-oil-slips .app{display:none!important}
   .oil-slips-print{position:static!important;padding:0!important;overflow:visible!important;background:#fff!important}
   .oil-slips-actions{display:none!important}
   .oil-slip{margin:0 0 0.15in 0;width:100%}
+  .osinput{background:#fff!important}
 }
 `;
 
@@ -402,8 +405,13 @@ function UnitForm({ initial, customer_id, engines, hoursLastUpdated, onSaveAsync
         <div className="fld"><label>Year</label><input value={form.year || ''} onChange={e => setForm(p => ({ ...p, year: e.target.value }))} /></div>
       </div>
       <div className="fld"><label>Serial Number</label><input value={form.serial_number || ''} onChange={e => setForm(p => ({ ...p, serial_number: e.target.value }))} /></div>
-      <div className="fld"><label>Engine Hours</label><input type="number" value={form.current_hours || 0} onChange={e => setForm(p => ({ ...p, current_hours: Number(e.target.value) || 0 }))} />
-        {hoursLastUpdated && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Last updated: {hoursLastUpdated}</p>}
+      <div className="fr">
+        <div className="fld"><label>Engine Hours</label><input type="number" value={form.current_hours || 0} onChange={e => setForm(p => ({ ...p, current_hours: Number(e.target.value) || 0 }))} />
+          {hoursLastUpdated && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Last updated: {hoursLastUpdated}</p>}
+        </div>
+        <div className="fld"><label>Hours at Last Service</label><input type="number" value={(form as any).previous_hours || 0} onChange={e => setForm(p => ({ ...p, previous_hours: Number(e.target.value) || 0 } as any))} />
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Used to calculate fluid hours on oil slips. Auto-updates after each completed work order.</p>
+        </div>
       </div>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
     </ModalShell>
@@ -1178,7 +1186,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     const addChecklistItem = () => { if (!newItem.trim()) return; const newList = [...wo.checklist, { text: newItem.trim(), done: false }]; updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { checklist: newList } }); setNewItem(''); };
     const complete = () => {
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { status: 'complete', completed_at: new Date().toISOString() } });
-      if (wo.engine_hours > 0 && u) updateUnit.mutate({ unit_id: u.unit_id, updates: { current_hours: wo.engine_hours } });
+      if (wo.engine_hours > 0 && u) updateUnit.mutate({ unit_id: u.unit_id, updates: { current_hours: wo.engine_hours, previous_hours: u.current_hours || 0 } as any });
       showToast('Work order completed!');
     };
     const reopen = () => {
@@ -1438,9 +1446,13 @@ export default function OilTrackApp({ user }: { user: User }) {
     const prior = workOrders
       .filter(w => w.unit_id === wo.unit_id && w.work_order_id !== wo.work_order_id && (w.engine_hours || 0) > 0 && woSeq(w) < woSeq(wo))
       .sort((a, b) => woSeq(b).localeCompare(woSeq(a)))[0];
-    if (!prior) return null;
-    const diff = wo.engine_hours - (prior.engine_hours || 0);
-    return diff > 0 ? diff : null;
+    if (prior) {
+      const diff = wo.engine_hours - (prior.engine_hours || 0);
+      if (diff > 0) return diff;
+    }
+    const prevHrs = (getUnit(wo.unit_id) as any)?.previous_hours || 0;
+    if (prevHrs > 0 && wo.engine_hours > prevHrs) return wo.engine_hours - prevHrs;
+    return null;
   };
 
   const needsOilSlip = (w: WorkOrder) =>
@@ -1489,7 +1501,7 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
         <div className="osrow" style={{ gridTemplateColumns: '1fr 1fr 1.1fr 1.2fr 1fr' }}>
           <div className="oscell"><span className="osl">Equip Hrs</span><span className="osv">{wo.engine_hours > 0 ? wo.engine_hours.toLocaleString() : ''}</span></div>
-          <div className="oscell"><span className="osl">Fluid Hrs</span><span className="osv">{fluidHrs != null ? fluidHrs.toLocaleString() : ''}</span></div>
+          <div className="oscell"><span className="osl">Fluid Hrs</span><input className="osinput" defaultValue={fluidHrs != null ? fluidHrs.toLocaleString() : ''} /></div>
           <div className="oscell"><span className="osl">Oil Added</span><span className="osv">{galsRaw > 0 ? `${gal} GAL ${qt} QT` : ''}</span></div>
           <div className="oscell"><span className="osl">Oil Brand / WT</span><span className="osv">{wo.oil_used?.type || e?.oil_type || ''}</span></div>
           <div className="oscell"><span className="osl">Compartment</span><span className="osv">ENGINE</span></div>
