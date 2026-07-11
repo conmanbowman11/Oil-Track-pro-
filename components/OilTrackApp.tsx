@@ -167,6 +167,7 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 /* ===== PRINT STYLES (QuickBooks-style invoice — window envelope ready, single page) ===== */
 @page{size:letter;margin:0.4in 0.5in 0.4in 0.5in}
 @media print{
+  @page{margin:0.5in 0.5in 0.95in 0.5in}
   /* ---- HIDE: app chrome ---- */
   .sb,.topbar,.crumbs,.ab,.tklist-item,.psearchres,.tplist-item .qty input,.runtpl,.tpcard{display:none!important}
   .btn,button{display:none!important}
@@ -205,16 +206,19 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
   .print-billto p{font-size:10pt;line-height:1.3;margin:0}
 
   /* ---- MAIN CONTENT (starts below envelope window) ---- */
-  /* Reorder sections in print: Details → Work Performed → Parts → Cost Breakdown → Notes */
+  /* Class-based ordering (nth-child broke when sections shifted): Details → Work → Parts → Cost → Notes */
   .wo{display:flex;flex-direction:column}
-  .wo .ws:nth-child(1){order:1}  /* Details (Equipment) */
-  .wo .ws:nth-child(2){order:3}  /* Parts */
-  .wo .ws:nth-child(3){order:4}  /* Oil (screen-only, hidden) */
-  .wo .ws:nth-child(4){order:2}  /* Work Performed - moved up */
-  .wo .ws:nth-child(5){order:5}  /* Cost Breakdown */
-  .wo .ws:nth-child(6){order:6}  /* Notes */
-  .ws{padding:0!important;border-bottom:none!important;page-break-inside:avoid;margin-bottom:8pt}
-  .ws:nth-child(1){margin-top:3.4in}  /* push first .ws (Details) below the envelope window */
+  .wo-details{order:1;margin-top:3.3in}  /* reserves space for absolute header + Bill To window */
+  .wo-work{order:2}
+  .wo-parts{order:3}
+  .ws.wo-parts{page-break-inside:auto}
+  .screen-only-oil{order:4}
+  .cost-section{order:5}
+  .wo-notes{order:6}
+  .wo-notes-empty{display:none!important}
+  .print-footnotes{order:7}
+  .wo-complete{display:none!important}
+  .ws{padding:0!important;border-bottom:none!important;page-break-inside:avoid;margin-bottom:10pt}
   .print-equipment p{font-size:9.5pt;margin:0;line-height:1.4;color:#000!important}
   .ws h4{font-size:7.5pt!important;font-weight:500!important;text-transform:uppercase;letter-spacing:0.08em;color:#888!important;margin:0 0 4pt 0!important;padding:0 0 3pt 0!important;border-bottom:0.5pt solid #999;page-break-after:avoid}
 
@@ -374,6 +378,13 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
       <div className="fr">
         <div className="fld"><label>Oil Retail (per gallon)</label><input type="number" step="0.01" value={fees.oil_retail_per_gallon || 0} onChange={e => setFee('oil_retail_per_gallon', Number(e.target.value) || 0)} /></div>
         <div className="fld"><label>Oil Cost (per gallon)</label><input type="number" step="0.01" value={fees.oil_cost_per_gallon || 0} onChange={e => setFee('oil_cost_per_gallon', Number(e.target.value) || 0)} /></div>
+      </div>
+      <div className="fld">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!(form as any).provides_own_oil} onChange={e => setForm(p => ({ ...p, provides_own_oil: e.target.checked } as any))} style={{ accentColor: 'var(--ac)' }} />
+          Customer supplies their own oil
+        </label>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>New work orders for this customer will record oil (type & gallons for oil slips) but charge $0.00 for it.</p>
       </div>
     </ModalShell>
   );
@@ -804,11 +815,12 @@ export default function OilTrackApp({ user }: { user: User }) {
       });
     }
 
+    const custOil = !!(customer as any).provides_own_oil;
     const oil = engine && engine.oil_capacity_gallons > 0 ? {
       type: engine.oil_type, gallons: engine.oil_capacity_gallons,
-      retail_per_gallon: cf.oil_retail_per_gallon || 0, cost_per_gallon: cf.oil_cost_per_gallon || 0,
-      total_retail: round2(engine.oil_capacity_gallons * (cf.oil_retail_per_gallon || 0)),
-      total_cost: round2(engine.oil_capacity_gallons * (cf.oil_cost_per_gallon || 0)),
+      retail_per_gallon: custOil ? 0 : (cf.oil_retail_per_gallon || 0), cost_per_gallon: custOil ? 0 : (cf.oil_cost_per_gallon || 0),
+      total_retail: custOil ? 0 : round2(engine.oil_capacity_gallons * (cf.oil_retail_per_gallon || 0)),
+      total_cost: custOil ? 0 : round2(engine.oil_capacity_gallons * (cf.oil_cost_per_gallon || 0)),
     } : null;
 
     const fees = {
@@ -824,7 +836,7 @@ export default function OilTrackApp({ user }: { user: User }) {
       const wo = await createWorkOrder.mutateAsync({
         customer_id: u.customer_id, unit_id: u.unit_id, service_template_id: template.template_id,
         status: 'open', tier: template.name, service_date: new Date().toISOString().split('T')[0],
-        engine_hours: 0, technician: '', customer_provided_filters: false, notes: '',
+        engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: custOil, notes: '',
         parts_used: partsUsed, oil_used: oil, fees, tax_rate_percent, ...totals, checklist,
       });
       return wo.work_order_id;
@@ -851,7 +863,7 @@ export default function OilTrackApp({ user }: { user: User }) {
       const wo = await createWorkOrder.mutateAsync({
         customer_id: u.customer_id, unit_id: u.unit_id, status: 'open', tier: 'Custom Service',
         service_date: new Date().toISOString().split('T')[0],
-        engine_hours: 0, technician: '', customer_provided_filters: false, notes: '',
+        engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: !!(customer as any).provides_own_oil, notes: '',
         parts_used: [], oil_used: null, fees, tax_rate_percent, ...totals, checklist: [],
       });
       return wo.work_order_id;
@@ -1183,6 +1195,18 @@ export default function OilTrackApp({ user }: { user: User }) {
       const totals = calculateWorkOrderTotals({ parts: wo.parts_used, oil: newOil, fees: wo.fees, tax_rate_percent: wo.tax_rate_percent });
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { oil_used: newOil, ...totals } });
     };
+    const toggleCustOil = (on: boolean) => {
+      const cf = (c?.default_fees || {}) as any;
+      const newOil = wo.oil_used ? {
+        ...wo.oil_used,
+        retail_per_gallon: on ? 0 : (cf.oil_retail_per_gallon || 0),
+        cost_per_gallon: on ? 0 : (cf.oil_cost_per_gallon || 0),
+        total_retail: on ? 0 : round2(wo.oil_used.gallons * (cf.oil_retail_per_gallon || 0)),
+        total_cost: on ? 0 : round2(wo.oil_used.gallons * (cf.oil_cost_per_gallon || 0)),
+      } : null;
+      const totals = calculateWorkOrderTotals({ parts: wo.parts_used, oil: newOil, fees: wo.fees, tax_rate_percent: wo.tax_rate_percent });
+      updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { customer_provided_oil: on, oil_used: newOil, ...totals } as any });
+    };
     const addChecklistItem = () => { if (!newItem.trim()) return; const newList = [...wo.checklist, { text: newItem.trim(), done: false }]; updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { checklist: newList } }); setNewItem(''); };
     const complete = () => {
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { status: 'complete', completed_at: new Date().toISOString() } });
@@ -1224,7 +1248,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="inv">
             <div className="lbl">Invoice</div>
             <div className="num">INV-{wo.invoice_number}</div>
-            <div className="date">Date: {wo.service_date}</div>
+            <div className="date">Date: {fmtDateUS(wo.service_date)}</div>
             <div className="date">Terms: {company?.payment_terms || 'Net 15'}</div>
           </div>
         </div>
@@ -1309,6 +1333,14 @@ export default function OilTrackApp({ user }: { user: User }) {
               </div>
             )}
             {isOpen && (
+              <div><label>Cust. Oil</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 2 }}>
+                  <input type="checkbox" checked={!!(wo as any).customer_provided_oil} onChange={ev => toggleCustOil(ev.target.checked)} style={{ accentColor: 'var(--ac)' }} />
+                  Customer providing
+                </label>
+              </div>
+            )}
+            {isOpen && (
               <div><label>Oil</label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 2 }}>
                   <input type="checkbox" checked={!!wo.oil_used} onChange={ev => toggleOil(ev.target.checked)} style={{ accentColor: 'var(--ac)' }} />
@@ -1338,7 +1370,7 @@ export default function OilTrackApp({ user }: { user: User }) {
                 {wo.oil_used && (
                   <tr className="oil-row print-only-row" style={{ cursor: 'default' }}>
                     <td className="m" style={{ color: '#888' }}>—</td>
-                    <td style={{ fontSize: 12 }}>{wo.oil_used.type} engine oil</td>
+                    <td style={{ fontSize: 12 }}>{wo.oil_used.type} engine oil{(wo as any).customer_provided_oil ? ' (customer supplied)' : ''}</td>
                     <td><span className="tag tb">CAT</span></td>
                     <td className="m">{wo.oil_used.gallons} gal</td>
                     <td className="m">{formatMoney(wo.oil_used.retail_per_gallon)}</td>
@@ -1424,7 +1456,7 @@ export default function OilTrackApp({ user }: { user: User }) {
 
         {/* PRINT FOOTER */}
         {company?.invoice_footer_notes && (
-          <div className="print-only" style={{ padding: '12pt 0 0 0', fontSize: '8.5pt', color: '#555', borderTop: '1pt solid #ccc' }}>
+          <div className="print-only print-footnotes" style={{ padding: '12pt 0 0 0', fontSize: '8.5pt', color: '#555', borderTop: '1pt solid #ccc' }}>
             <p style={{ whiteSpace: 'pre-wrap' }}>{company.invoice_footer_notes}</p>
           </div>
         )}
