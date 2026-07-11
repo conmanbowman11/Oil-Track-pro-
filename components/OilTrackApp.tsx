@@ -18,6 +18,7 @@ import {
   useFleetUnits,
   useCreateFleetUnit,
   useUpdateFleetUnit,
+  useDeleteFleetUnit,
   useServiceTemplates,
   useCreateServiceTemplate,
   useUpdateServiceTemplate,
@@ -711,6 +712,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const createTemplate = useCreateServiceTemplate();
   const updateTemplate = useUpdateServiceTemplate();
   const deleteTemplate = useDeleteServiceTemplate();
+  const deleteUnit = useDeleteFleetUnit();
   const { data: workOrders = [] } = useWorkOrders();
   const createWorkOrder = useCreateWorkOrder();
   const updateWorkOrder = useUpdateWorkOrder();
@@ -983,7 +985,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           </div>
           {cu.length === 0 ? <div className="empty"><p>No equipment yet</p></div> : (
             <table>
-              <thead><tr><th>Unit #</th><th>Description</th><th>Engine</th><th>Hours</th><th>Templates</th><th>WOs</th></tr></thead>
+              <thead><tr><th>Unit #</th><th>Description</th><th>Engine</th><th>Hours</th><th>Templates</th><th>WOs</th><th></th></tr></thead>
               <tbody>
                 {cu.map(u => {
                   const lastWO = workOrders.filter(w => w.unit_id === u.unit_id && w.status === 'complete' && w.completed_at)
@@ -999,6 +1001,16 @@ export default function OilTrackApp({ user }: { user: User }) {
                     </td>
                     <td className="m">{templatesForUnit(u.unit_id).length}</td>
                     <td className="m">{workOrders.filter(w => w.unit_id === u.unit_id).length}</td>
+                    <td onClick={e => e.stopPropagation()} style={{ width: 34 }}>
+                      <button className="btn bs bd2btn" onClick={() => {
+                        const woCount = workOrders.filter(w => w.unit_id === u.unit_id).length;
+                        setModal({
+                          t: 'confirmDelete',
+                          what: `unit "${u.unit_number}"${woCount > 0 ? ` — it has ${woCount} work order${woCount === 1 ? '' : 's'} which will remain in history` : ''}`,
+                          onConfirm: async () => { await deleteUnit.mutateAsync(u.unit_id); showToast('Equipment deleted'); },
+                        });
+                      }}>{IC(iTrash, 13)}</button>
+                    </td>
                   </tr>
                   );
                 })}
