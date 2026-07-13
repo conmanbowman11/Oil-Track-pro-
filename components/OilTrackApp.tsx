@@ -1371,7 +1371,7 @@ export default function OilTrackApp({ user }: { user: User }) {
                   <tr className="oil-row print-only-row" style={{ cursor: 'default' }}>
                     <td className="m" style={{ color: '#888' }}>—</td>
                     <td style={{ fontSize: 12 }}>{wo.oil_used.type} engine oil{(wo as any).customer_provided_oil ? ' (customer supplied)' : ''}</td>
-                    <td><span className="tag tb">CAT</span></td>
+                    <td>{(wo as any).customer_provided_oil ? <span className="tag">Customer</span> : <span className="tag tb">CAT</span>}</td>
                     <td className="m">{wo.oil_used.gallons} gal</td>
                     <td className="m">{formatMoney(wo.oil_used.retail_per_gallon)}</td>
                     <td className="m">{formatMoney(wo.oil_used.total_retail)}</td>
