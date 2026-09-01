@@ -49,6 +49,8 @@ import type {
 const SUPPLIERS = ['CAT', 'John Deere', 'Case IH', 'AGCO', 'Baldwin', 'Donaldson', 'Fleetguard/Cummins', 'Other'];
 const CATEGORIES = ['Fuel System', 'Air Filter', 'Oil Filter', 'Hydraulic', 'Transmission', 'DEF', 'Coolant', 'Lab/Testing', 'Other'];
 
+type BillingRange = '30' | '60' | '90' | 'year' | 'all';
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 :root{--bg:#f3f0e8;--bg2:#e9e5db;--cd:#fff;--cd2:#fafaf7;--bd:#d4d0c6;--bd2:#e6e2d8;--tx:#2b2924;--tx2:#6d6a62;--tx3:#a09c94;--ac:#c45d2c;--ac2:#a84b22;--ac3:#f6ece5;--gn:#2d7a3a;--gn2:#e5f2e8;--bl:#2a679c;--bl2:#e4eff8;--am:#ad7d0c;--am2:#f8f1dc;--rd:#b83028;--rd2:#fae6e4;--r:6px;--rl:10px}
@@ -95,6 +97,8 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 .st{background:var(--cd);border:1px solid var(--bd2);border-radius:var(--rl);padding:14px}
 .st-l{font-size:10.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em;font-weight:500}
 .st-v{font-size:22px;font-weight:700;font-family:'IBM Plex Mono',monospace;letter-spacing:-.04em;margin-top:3px}
+.st-yr-sel{font-size:10px;padding:1px 4px;border:1px solid var(--bd);border-radius:3px;background:var(--bg);font-family:'IBM Plex Mono',monospace;cursor:pointer;color:var(--tx2);text-transform:none;letter-spacing:0;font-weight:500;outline:none}
+.st-yr-sel:hover{border-color:var(--ac)}
 .mbg{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
 .mdl{background:var(--cd);border:1px solid var(--bd);border-radius:12px;width:100%;max-width:680px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column}
 .mdl.sm{max-width:540px}
@@ -159,6 +163,10 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 .toast.err{background:var(--rd)}
 @keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+
+/* Billing filter bar */
+.filterbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--cd);border:1px solid var(--bd2);border-radius:var(--rl);margin-bottom:12px}
+.filterbar .lbl{font-size:11px;color:var(--tx3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}
 
 /* ===== PRINT-ONLY: company header (hidden on screen) ===== */
 .print-only{display:none}
@@ -324,6 +332,50 @@ function ModalShell({
         </div>
       </div>
     </div>
+  );
+}
+
+// =============================================
+// LOCAL NUMBER INPUT (fixes typing lag by committing on blur / Enter,
+// not on every keystroke. Prevents the whole work order from re-rendering
+// and hitting Supabase per keystroke.)
+// =============================================
+function LocalNumberInput({
+  value, onCommit, style, placeholder, step = '1',
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+  style?: React.CSSProperties;
+  placeholder?: string;
+  step?: string;
+}) {
+  const [local, setLocal] = useState<string>(value ? String(value) : '');
+  const focusedRef = useRef(false);
+
+  // If the parent's value changes while we're NOT focused, sync local state.
+  // If we ARE focused, keep the user's in-progress typing intact.
+  useEffect(() => {
+    if (!focusedRef.current) setLocal(value ? String(value) : '');
+  }, [value]);
+
+  const commit = () => {
+    focusedRef.current = false;
+    const num = Number(local) || 0;
+    if (num !== value) onCommit(num);
+  };
+
+  return (
+    <input
+      type="number"
+      step={step}
+      value={local}
+      placeholder={placeholder}
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focusedRef.current = true; }}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+      style={style}
+    />
   );
 }
 
@@ -635,7 +687,7 @@ function CopyTemplateForm({ unit_id, units, customers, templates, onSaveAsync, o
 }
 
 // =============================================
-// EDIT INVOICE NUMBER FORM (NEW)
+// EDIT INVOICE NUMBER FORM
 // =============================================
 function EditInvoiceNumberForm({
   currentNumber, allWorkOrders, currentWorkOrderId, onSaveAsync, onClose,
@@ -768,6 +820,9 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
   const [selectedOilSlips, setSelectedOilSlips] = useState<string[]>([]);
   const [showOilSlips, setShowOilSlips] = useState(false);
+  // NEW: dashboard revenue year selector, billing time-window filter
+  const [dashYear, setDashYear] = useState<number>(new Date().getFullYear());
+  const [billRange, setBillRange] = useState<BillingRange>('30');
   const aiRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -790,6 +845,15 @@ export default function OilTrackApp({ user }: { user: User }) {
   const getUnit = (id: string) => units.find(u => u.unit_id === id);
   const getPart = (part_number: string) => parts.find(p => p.part_number === part_number);
   const templatesForUnit = (unit_id: string) => templates.filter(t => t.unit_id === unit_id);
+
+  // Parse "YYYY-MM-DD" as a local date (avoids UTC shifting Jan 1 to Dec 31 in some timezones)
+  const yearOfServiceDate = (d: string | null | undefined): number | null => {
+    if (!d) return null;
+    const parts = d.split('-');
+    if (parts.length < 1) return null;
+    const y = Number(parts[0]);
+    return isNaN(y) ? null : y;
+  };
 
   async function buildWorkOrderFromTemplate(template: ServiceTemplate): Promise<string | null> {
     const u = getUnit(template.unit_id);
@@ -920,14 +984,43 @@ export default function OilTrackApp({ user }: { user: User }) {
 
   const renderDashboard = () => {
     const open = workOrders.filter(w => w.status === 'open');
-    const rev = workOrders.filter(w => w.status === 'complete').reduce((s, w) => s + (w.total_retail || 0), 0);
+    const completed = workOrders.filter(w => w.status === 'complete');
+
+    // Years available in the dropdown = every year that has a completed WO, plus the current year
+    const availableYears = (() => {
+      const years = new Set<number>();
+      completed.forEach(w => {
+        const y = yearOfServiceDate(w.service_date);
+        if (y != null) years.add(y);
+      });
+      years.add(new Date().getFullYear());
+      return Array.from(years).sort((a, b) => b - a);
+    })();
+
+    const rev = completed
+      .filter(w => yearOfServiceDate(w.service_date) === dashYear)
+      .reduce((s, w) => s + (w.total_retail || 0), 0);
+
     return (
       <>
         <div className="stats">
           <div className="st"><div className="st-l">Customers</div><div className="st-v" style={{ color: 'var(--ac)' }}>{customers.length}</div></div>
           <div className="st"><div className="st-l">Fleet Units</div><div className="st-v" style={{ color: 'var(--bl)' }}>{units.length}</div></div>
           <div className="st"><div className="st-l">Open WOs</div><div className="st-v" style={{ color: open.length ? 'var(--am)' : 'var(--gn)' }}>{open.length}</div></div>
-          <div className="st"><div className="st-l">Revenue</div><div className="st-v">${Math.round(rev).toLocaleString()}</div></div>
+          <div className="st">
+            <div className="st-l" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+              <span>Revenue</span>
+              <select
+                className="st-yr-sel"
+                value={dashYear}
+                onChange={e => setDashYear(Number(e.target.value))}
+                aria-label="Filter revenue by year"
+              >
+                {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <div className="st-v">${Math.round(rev).toLocaleString()}</div>
+          </div>
         </div>
         {open.length > 0 && (
           <div className="card">
@@ -950,11 +1043,11 @@ export default function OilTrackApp({ user }: { user: User }) {
         )}
         <div className="card">
           <div className="ch"><h3>Recent Completed</h3></div>
-          {workOrders.filter(w => w.status === 'complete').length === 0 ? (<div className="empty"><p>No completed work orders yet</p></div>) : (
+          {completed.length === 0 ? (<div className="empty"><p>No completed work orders yet</p></div>) : (
             <table>
               <thead><tr><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th>Total</th></tr></thead>
               <tbody>
-                {workOrders.filter(w => w.status === 'complete').slice(0, 8).map(w => (
+                {completed.slice(0, 8).map(w => (
                   <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
                     <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
                     <td className="m">{w.service_date}</td>
@@ -1179,8 +1272,10 @@ export default function OilTrackApp({ user }: { user: User }) {
 
     const togChecklist = (i: number) => { const newList = wo.checklist.map((it, j) => j === i ? { ...it, done: !it.done } : it); updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { checklist: newList } }); };
     const updField = (k: string, v: any) => updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { [k]: v } });
-    const updFee = (k: string, v: string) => {
-      const newFees = { ...wo.fees, [k]: Number(v) || 0 };
+    // NOTE: now accepts a number directly (from LocalNumberInput). Kept backwards-compatible with string.
+    const updFee = (k: string, v: number | string) => {
+      const num = typeof v === 'number' ? v : (Number(v) || 0);
+      const newFees = { ...wo.fees, [k]: num };
       const totals = calculateWorkOrderTotals({ parts: wo.parts_used, oil: wo.oil_used, fees: newFees, tax_rate_percent: wo.tax_rate_percent });
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { fees: newFees, ...totals } });
     };
@@ -1321,7 +1416,14 @@ export default function OilTrackApp({ user }: { user: User }) {
             <div><label>Engine</label><p style={{ color: 'var(--bl)', fontWeight: 600 }}>{e?.name}</p></div>
             <div><label>Service</label><p><span className="tag tc">{wo.tier}</span></p></div>
             <div><label>Date</label>{isOpen ? <input type="date" value={wo.service_date} onChange={ev => updField('service_date', ev.target.value)} style={inp} /> : <p className="m">{wo.service_date}</p>}</div>
-            <div><label>Engine Hours</label>{isOpen ? <input type="number" value={wo.engine_hours || ''} placeholder="Enter hours" onChange={ev => updField('engine_hours', Number(ev.target.value) || 0)} style={{ ...inp, fontFamily: "'IBM Plex Mono',monospace", width: 120 }} /> : <p className="m">{wo.engine_hours || '—'}</p>}</div>
+            <div><label>Engine Hours</label>{isOpen ? (
+              <LocalNumberInput
+                value={wo.engine_hours || 0}
+                placeholder="Enter hours"
+                onCommit={v => updField('engine_hours', v)}
+                style={{ ...inp, fontFamily: "'IBM Plex Mono',monospace", width: 120 }}
+              />
+            ) : <p className="m">{wo.engine_hours || '—'}</p>}</div>
             <div><label>Technician</label>{isOpen ? <input value={wo.technician} onChange={ev => updField('technician', ev.target.value)} placeholder="Name" style={{ ...inp, width: 140 }} /> : <p>{wo.technician || '—'}</p>}</div>
             <div><label>Invoice #</label><p className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(wo.invoice_number)}</p></div>
             {isOpen && (
@@ -1416,7 +1518,12 @@ export default function OilTrackApp({ user }: { user: User }) {
               {[['Labor', 'labor'], ['Travel', 'travel_charge'], ['Supplies', 'service_supplies'], ['Environmental', 'environmental_fee'], ['Oil Sample', 'oil_sample_fee'], ['Other', 'other']].map(([l, k]) => (
                 <div key={k} className="fld" style={{ marginBottom: 6 }}>
                   <label>{l}</label>
-                  <input type="number" step="0.01" value={(wo.fees as any)[k] || 0} onChange={ev => updFee(k, ev.target.value)} style={{ padding: '5px 8px', fontSize: 12, fontFamily: "'IBM Plex Mono',monospace" }} />
+                  <LocalNumberInput
+                    value={(wo.fees as any)[k] || 0}
+                    step="0.01"
+                    onCommit={v => updFee(k, v)}
+                    style={{ padding: '5px 8px', fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", width: '100%', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', color: 'var(--tx)', outline: 'none' }}
+                  />
                 </div>
               ))}
             </div>
@@ -1676,9 +1783,27 @@ export default function OilTrackApp({ user }: { user: User }) {
   };
 
   const renderBilling = () => {
+    // Filter helpers for the selected time window.
+    // Billed section filters by billed_at ("in the last N days I billed $X").
+    // Unbilled section filters by service_date (older service = more urgent to invoice).
+    const nowMs = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const cutoffMs =
+      billRange === 'all' ? 0 :
+      billRange === 'year' ? nowMs - 365 * dayMs :
+      nowMs - Number(billRange) * dayMs;
+
+    const inRange = (dateStr: string | null | undefined) => {
+      if (billRange === 'all') return true;
+      if (!dateStr) return false;
+      const t = new Date(dateStr).getTime();
+      if (isNaN(t)) return false;
+      return t >= cutoffMs;
+    };
+
     const completed = workOrders.filter(w => w.status === 'complete');
-    const unbilled = completed.filter(w => !(w as any).billed);
-    const billed = completed.filter(w => (w as any).billed);
+    const unbilled = completed.filter(w => !(w as any).billed && inRange(w.service_date));
+    const billed = completed.filter(w => (w as any).billed && inRange((w as any).billed_at));
     const unbilledTotal = unbilled.reduce((s, w) => s + (w.total_retail || 0), 0);
     const billedTotal = billed.reduce((s, w) => s + (w.total_retail || 0), 0);
 
@@ -1687,8 +1812,34 @@ export default function OilTrackApp({ user }: { user: User }) {
       showToast(nowBilled ? 'Marked as billed' : 'Marked as unbilled');
     };
 
+    const rangeLabel = (r: BillingRange) => {
+      switch (r) {
+        case '30': return 'Last 30 days';
+        case '60': return 'Last 60 days';
+        case '90': return 'Last 90 days';
+        case 'year': return 'Last year';
+        case 'all': return 'All time';
+      }
+    };
+
+    const activeLabel = rangeLabel(billRange);
+
     return (
       <>
+        {/* Time-period filter */}
+        <div className="filterbar">
+          <span className="lbl">Time period:</span>
+          {(['30', '60', '90', 'year', 'all'] as BillingRange[]).map(r => (
+            <button
+              key={r}
+              className={`btn bs ${billRange === r ? 'bp' : ''}`}
+              onClick={() => setBillRange(r)}
+            >
+              {rangeLabel(r)}
+            </button>
+          ))}
+        </div>
+
         <div className="stats">
           <div className="st"><div className="st-l">Unbilled WOs</div><div className="st-v" style={{ color: unbilled.length ? 'var(--am)' : 'var(--gn)' }}>{unbilled.length}</div></div>
           <div className="st"><div className="st-l">Outstanding</div><div className="st-v" style={{ color: 'var(--am)' }}>${Math.round(unbilledTotal).toLocaleString()}</div></div>
@@ -1697,8 +1848,8 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
 
         <div className="card">
-          <div className="ch"><h3>Unbilled — Needs Invoicing ({unbilled.length})</h3></div>
-          {unbilled.length === 0 ? <div className="empty"><p>All caught up! Nothing waiting to be billed.</p></div> : (
+          <div className="ch"><h3>Unbilled — Needs Invoicing ({unbilled.length}) <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span></h3></div>
+          {unbilled.length === 0 ? <div className="empty"><p>All caught up for this time period! Nothing waiting to be billed.</p></div> : (
             <table>
               <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
               <tbody>
@@ -1719,8 +1870,8 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
 
         <div className="card">
-          <div className="ch"><h3>Billed ({billed.length})</h3></div>
-          {billed.length === 0 ? <div className="empty"><p>Nothing billed yet</p></div> : (
+          <div className="ch"><h3>Billed ({billed.length}) <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span></h3></div>
+          {billed.length === 0 ? <div className="empty"><p>Nothing billed in this time period</p></div> : (
             <table>
               <thead><tr><th>Invoice #</th><th>Billed On</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
               <tbody>
