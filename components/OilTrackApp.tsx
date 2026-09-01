@@ -820,9 +820,10 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
   const [selectedOilSlips, setSelectedOilSlips] = useState<string[]>([]);
   const [showOilSlips, setShowOilSlips] = useState(false);
-  // NEW: dashboard revenue year selector, billing time-window filter
+  // NEW: dashboard revenue year selector, billing time-window filter, parts catalog search
   const [dashYear, setDashYear] = useState<number>(new Date().getFullYear());
   const [billRange, setBillRange] = useState<BillingRange>('30');
+  const [partsSearch, setPartsSearch] = useState('');
   const aiRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1894,32 +1895,65 @@ export default function OilTrackApp({ user }: { user: User }) {
     );
   };
 
-  const renderParts = () => (
-    <div className="card">
-      <div className="ch">
-        <h3>Parts Catalog ({parts.length})</h3>
-        <button className="btn bs bp" onClick={() => setModal({ t: 'addPart' })}>{IC(iPlus, 15)} Add Part</button>
+  const renderParts = () => {
+    const q = partsSearch.trim().toLowerCase();
+    const filtered = q ? parts.filter(p =>
+      (p.part_number || '').toLowerCase().includes(q) ||
+      (p.description || '').toLowerCase().includes(q) ||
+      (p.manufacturer || '').toLowerCase().includes(q) ||
+      (p.supplier || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q)
+    ) : parts;
+
+    return (
+      <div className="card">
+        <div className="ch">
+          <h3>Parts Catalog ({q ? `${filtered.length} of ${parts.length}` : parts.length})</h3>
+          <button className="btn bs bp" onClick={() => setModal({ t: 'addPart' })}>{IC(iPlus, 15)} Add Part</button>
+        </div>
+        {parts.length > 0 && (
+          <div style={{ position: 'relative', marginBottom: 10 }}>
+            <input
+              type="text"
+              value={partsSearch}
+              onChange={ev => setPartsSearch(ev.target.value)}
+              placeholder="Search by part #, description, manufacturer, supplier, or category..."
+              style={{ width: '100%', padding: '8px 32px 8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', color: 'var(--tx)' }}
+            />
+            {partsSearch && (
+              <button
+                onClick={() => setPartsSearch('')}
+                title="Clear search"
+                style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
+              >✕</button>
+            )}
+          </div>
+        )}
+        {parts.length === 0 ? (
+          <div className="empty"><p>No parts yet. Add parts to use them in service templates.</p></div>
+        ) : filtered.length === 0 ? (
+          <div className="empty"><p>No parts match "{partsSearch}"</p></div>
+        ) : (
+          <table>
+            <thead><tr><th>Part #</th><th>Description</th><th>Mfr</th><th>Category</th><th>Cost</th><th>Retail</th><th></th></tr></thead>
+            <tbody>
+              {filtered.map(p => (
+                <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })}>
+                  <td className="m" style={{ fontWeight: 700 }}>{p.part_number}</td>
+                  <td>{p.description}</td>
+                  <td><span className="tag tb">{p.manufacturer}</span></td>
+                  <td style={{ fontSize: 11, color: 'var(--tx2)' }}>{p.category}</td>
+                  <td className="m">{formatMoney(p.cost)}</td>
+                  <td className="m" style={{ fontWeight: 600 }}>{formatMoney(p.retail_price)}</td>
+                  <td><button className="btn bs">{IC(iEdit, 13)}</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
-      {parts.length === 0 ? <div className="empty"><p>No parts yet. Add parts to use them in service templates.</p></div> : (
-        <table>
-          <thead><tr><th>Part #</th><th>Description</th><th>Mfr</th><th>Category</th><th>Cost</th><th>Retail</th><th></th></tr></thead>
-          <tbody>
-            {parts.map(p => (
-              <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })}>
-                <td className="m" style={{ fontWeight: 700 }}>{p.part_number}</td>
-                <td>{p.description}</td>
-                <td><span className="tag tb">{p.manufacturer}</span></td>
-                <td style={{ fontSize: 11, color: 'var(--tx2)' }}>{p.category}</td>
-                <td className="m">{formatMoney(p.cost)}</td>
-                <td className="m" style={{ fontWeight: 600 }}>{formatMoney(p.retail_price)}</td>
-                <td><button className="btn bs">{IC(iEdit, 13)}</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
+    );
+  };
 
   const renderEngines = () => (
     <div className="card">
