@@ -16,6 +16,7 @@ export interface CompanySettings {
   payment_terms: string;
   tax_rate_percent: number;
   invoice_footer_notes: string;
+  next_invoice_number: number;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +61,7 @@ export type PartCategory =
   | 'Transmission'
   | 'DEF'
   | 'Coolant'
+  | 'Lab/Testing'
   | 'Other';
 
 export interface Part {
@@ -183,13 +185,15 @@ export interface WorkOrder {
   customer_id: string;
   unit_id: string;
   service_template_id: string | null;
-  invoice_number: number;
+  // Nullable now — only assigned at bill-time
+  invoice_number: number | null;
   status: WorkOrderStatus;
   tier: string;
   service_date: string;
   engine_hours: number;
   technician: string;
   customer_provided_filters: boolean;
+  customer_provided_oil: boolean;
   notes: string;
   parts_used: ServicePartSnapshot[];
   oil_used: OilUsedSnapshot | null;
@@ -205,6 +209,12 @@ export interface WorkOrder {
   work_order_pdf_url: string | null;
   invoice_pdf_url: string | null;
   checklist: ChecklistItem[];
+  // Bill-time / inventory / oil-slip tracking
+  billed: boolean;
+  billed_at: string | null;
+  inventory_deducted: boolean;
+  oil_slip_printed: boolean;
+  oil_slip_printed_at: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -216,5 +226,17 @@ export interface WorkOrderDraft {
   user_id: string;
   unit_id: string;
   draft_data: Partial<WorkOrder>;
+  updated_at: string;
+}
+
+// ─── Inventory ──────────────────────────────────
+export interface InventoryItem {
+  inventory_id: string;
+  user_id: string;
+  part_id: string;
+  quantity_on_hand: number;
+  reorder_point: number | null;
+  notes: string;
+  created_at: string;
   updated_at: string;
 }
