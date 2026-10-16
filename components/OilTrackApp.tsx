@@ -27,6 +27,11 @@ import {
   useCreateWorkOrder,
   useUpdateWorkOrder,
   useDeleteWorkOrder,
+  useInventory,
+  useCreateInventoryItem,
+  useUpdateInventoryItem,
+  useDeleteInventoryItem,
+  useAdjustInventoryByPartIds,
   ServiceTemplate,
 } from '@/lib/hooks';
 import {
@@ -44,12 +49,42 @@ import type {
   CompanySettings,
   ChecklistItem,
   WorkOrder,
+  InventoryItem,
 } from '@/types/database';
 
 const SUPPLIERS = ['CAT', 'John Deere', 'Case IH', 'AGCO', 'Baldwin', 'Donaldson', 'Fleetguard/Cummins', 'Other'];
 const CATEGORIES = ['Fuel System', 'Air Filter', 'Oil Filter', 'Hydraulic', 'Transmission', 'DEF', 'Coolant', 'Lab/Testing', 'Other'];
 
 type BillingRange = '30' | '60' | '90' | 'year' | 'all';
+type BillingSort = 'date-new' | 'date-old' | 'price-high' | 'price-low' | 'inv-high' | 'inv-low' | 'cust';
+
+// Display the "primary identifier" of a work order (unit number, falling back to invoice # if no unit)
+function woPrimaryId(wo: WorkOrder, unit?: FleetUnit): string {
+  if (unit?.unit_number) return unit.unit_number;
+  if (wo.invoice_number) return `INV-${wo.invoice_number}`;
+  return `WO-${wo.work_order_id.slice(0, 6)}`;
+}
+
+// Display the invoice number — handles null (unbilled WOs)
+function invNumDisplay(wo: WorkOrder): string {
+  return wo.invoice_number ? `INV-${wo.invoice_number}` : 'Unbilled';
+}
+
+// MMDDYYYY, no separators — for PDF filenames
+function fmtMMDDYYYY(d: string | Date): string {
+  const date = typeof d === 'string' ? new Date(d + (d.length === 10 ? 'T00:00:00' : '')) : d;
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const yyyy = String(date.getFullYear());
+  return `${mm}${dd}${yyyy}`;
+}
+
+// Year parser that doesn't shift due to UTC
+function yearOfServiceDate(d: string | null | undefined): number | null {
+  if (!d) return null;
+  const y = Number((d.split('-')[0]) || 0);
+  return isNaN(y) || y === 0 ? null : y;
+}
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
@@ -97,8 +132,6 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 .st{background:var(--cd);border:1px solid var(--bd2);border-radius:var(--rl);padding:14px}
 .st-l{font-size:10.5px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em;font-weight:500}
 .st-v{font-size:22px;font-weight:700;font-family:'IBM Plex Mono',monospace;letter-spacing:-.04em;margin-top:3px}
-.st-yr-sel{font-size:10px;padding:1px 4px;border:1px solid var(--bd);border-radius:3px;background:var(--bg);font-family:'IBM Plex Mono',monospace;cursor:pointer;color:var(--tx2);text-transform:none;letter-spacing:0;font-weight:500;outline:none}
-.st-yr-sel:hover{border-color:var(--ac)}
 .mbg{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
 .mdl{background:var(--cd);border:1px solid var(--bd);border-radius:12px;width:100%;max-width:680px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column}
 .mdl.sm{max-width:540px}
@@ -164,9 +197,44 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
 @keyframes slideIn{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 
-/* Billing filter bar */
+/* ===== Billing filter + sort bar ===== */
 .filterbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:var(--cd);border:1px solid var(--bd2);border-radius:var(--rl);margin-bottom:12px}
 .filterbar .lbl{font-size:11px;color:var(--tx3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-right:4px}
+.filterbar .sort-sel{padding:5px 9px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;font-family:'Outfit',sans-serif;color:var(--tx);cursor:pointer;outline:none}
+.filterbar .sort-sel:hover{border-color:var(--ac)}
+.filterbar .sort-sel:focus{border-color:var(--ac)}
+.filterbar .sep{width:1px;height:16px;background:var(--bd2);margin:0 4px}
+
+/* ===== Revenue year dropdown ===== */
+.st-yr-sel{font-size:10px;padding:1px 4px;border:1px solid var(--bd);border-radius:3px;background:var(--bg);font-family:'IBM Plex Mono',monospace;cursor:pointer;color:var(--tx2);text-transform:none;letter-spacing:0;font-weight:500;outline:none}
+.st-yr-sel:hover{border-color:var(--ac)}
+
+/* ===== Inline invoice-number edit ===== */
+.inv-cell{display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 6px;border-radius:3px;transition:background .08s}
+.inv-cell:hover{background:var(--bg)}
+.inv-cell .pencil{opacity:.4;font-size:10px}
+.inv-cell:hover .pencil{opacity:1}
+.inv-missing{color:var(--tx3);font-style:italic;font-size:11px}
+
+/* ===== Batch select checkbox ===== */
+.batch-cb{accent-color:var(--ac);width:14px;height:14px;cursor:pointer}
+
+/* ===== Inventory page ===== */
+.inv-stock{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10.5px;font-weight:600;font-family:'IBM Plex Mono',monospace}
+.inv-stock-ok{background:var(--gn2);color:var(--gn)}
+.inv-stock-low{background:var(--am2);color:var(--am)}
+.inv-stock-out{background:var(--rd2);color:var(--rd)}
+.inv-qty-input{width:70px;padding:3px 6px;text-align:center;background:var(--bg);border:1px solid var(--bd);border-radius:4px;font-size:12px;font-family:'IBM Plex Mono',monospace;color:var(--tx);outline:none}
+.inv-qty-input:focus{border-color:var(--ac)}
+
+/* ===== Inventory add-part modal: scrollable catalog list ===== */
+.inv-add-list{max-height:420px;overflow-y:auto;border:1px solid var(--bd);border-radius:var(--r);background:var(--cd2)}
+.inv-add-list .row{padding:8px 12px;border-bottom:1px solid var(--bd2);display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer}
+.inv-add-list .row:hover{background:var(--ac3)}
+.inv-add-list .row:last-child{border-bottom:none}
+.inv-add-list .pn{font-family:'IBM Plex Mono',monospace;font-weight:700;min-width:90px}
+.inv-add-list .desc{flex:1;color:var(--tx2)}
+.inv-add-list .already{color:var(--gn);font-weight:600;font-size:11px;margin-left:8px}
 
 /* ===== PRINT-ONLY: company header (hidden on screen) ===== */
 .print-only{display:none}
@@ -336,9 +404,9 @@ function ModalShell({
 }
 
 // =============================================
-// LOCAL NUMBER INPUT (fixes typing lag by committing on blur / Enter,
-// not on every keystroke. Prevents the whole work order from re-rendering
-// and hitting Supabase per keystroke.)
+// LOCAL NUMBER INPUT
+// Fixes typing lag by committing on blur/Enter instead of every keystroke.
+// Prevents the whole work order from re-rendering + hitting Supabase per keystroke.
 // =============================================
 function LocalNumberInput({
   value, onCommit, style, placeholder, step = '1',
@@ -352,8 +420,6 @@ function LocalNumberInput({
   const [local, setLocal] = useState<string>(value ? String(value) : '');
   const focusedRef = useRef(false);
 
-  // If the parent's value changes while we're NOT focused, sync local state.
-  // If we ARE focused, keep the user's in-progress typing intact.
   useEffect(() => {
     if (!focusedRef.current) setLocal(value ? String(value) : '');
   }, [value]);
@@ -687,15 +753,15 @@ function CopyTemplateForm({ unit_id, units, customers, templates, onSaveAsync, o
 }
 
 // =============================================
-// EDIT INVOICE NUMBER FORM
+// EDIT INVOICE NUMBER FORM (NEW)
 // =============================================
 function EditInvoiceNumberForm({
   currentNumber, allWorkOrders, currentWorkOrderId, onSaveAsync, onClose,
 }: {
-  currentNumber: number; allWorkOrders: WorkOrder[]; currentWorkOrderId: string;
+  currentNumber: number | null; allWorkOrders: WorkOrder[]; currentWorkOrderId: string;
   onSaveAsync: (newNumber: number) => Promise<void>; onClose: () => void;
 }) {
-  const [num, setNum] = useState(currentNumber);
+  const [num, setNum] = useState(currentNumber || 0);
   const [confirmed, setConfirmed] = useState(false);
 
   const isDuplicate = allWorkOrders.some(w => w.invoice_number === num && w.work_order_id !== currentWorkOrderId);
@@ -716,7 +782,7 @@ function EditInvoiceNumberForm({
       saveDisabled={num < 1 || isNaN(num)}
     >
       <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 12 }}>
-        Current invoice number: <strong className="m">INV-{currentNumber}</strong>
+        Current invoice number: <strong className="m">{currentNumber ? `INV-${currentNumber}` : '— (unbilled, no number yet)'}</strong>
       </p>
       <div className="fld">
         <label>New Invoice Number</label>
@@ -736,7 +802,7 @@ function EditInvoiceNumberForm({
 // SETTINGS FORM
 // =============================================
 function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | null | undefined; onSaveAsync: (s: Partial<CompanySettings>) => Promise<void> }) {
-  const [form, setForm] = useState<Partial<CompanySettings>>({ company_name: '', address: '', phone: '', email: '', tax_id: '', payment_terms: 'Net 15', tax_rate_percent: 2.25, invoice_footer_notes: '' });
+  const [form, setForm] = useState<Partial<CompanySettings>>({ company_name: '', address: '', phone: '', email: '', tax_id: '', payment_terms: 'Net 15', tax_rate_percent: 2.25, invoice_footer_notes: '', next_invoice_number: 1150 });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
   useEffect(() => { if (settings) setForm(settings); }, [settings]);
@@ -763,6 +829,11 @@ function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | n
           <div className="fld"><label>Payment Terms</label><input value={form.payment_terms || ''} onChange={e => setForm(p => ({ ...p, payment_terms: e.target.value }))} /></div>
         </div>
         <div className="fld"><label>Tax Rate (%) — applies to parts + oil only</label><input type="number" step="0.01" value={form.tax_rate_percent || 0} onChange={e => setForm(p => ({ ...p, tax_rate_percent: Number(e.target.value) || 0 }))} /></div>
+        <div className="fld">
+          <label>Next Invoice Number</label>
+          <input type="number" min="1" step="1" value={form.next_invoice_number || 1150} onChange={e => setForm(p => ({ ...p, next_invoice_number: Number(e.target.value) || 1 }))} />
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>The next invoice assigned when you mark a work order billed. Match this to QuickBooks whenever they drift apart.</p>
+        </div>
         <div className="fld"><label>Invoice Footer Notes</label><textarea value={form.invoice_footer_notes || ''} onChange={e => setForm(p => ({ ...p, invoice_footer_notes: e.target.value }))} /></div>
         <button className="btn bp" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</button>
       </div>
@@ -783,6 +854,7 @@ type ModalType =
   | { t: 'addTemplate' | 'editTemplate'; d?: ServiceTemplate; unit_id?: string }
   | { t: 'copyTemplate'; unit_id: string }
   | { t: 'editInvoiceNumber'; wo: WorkOrder }
+  | { t: 'addInventory' }
   | { t: 'confirmDelete'; what: string; danger?: boolean; onConfirm: () => Promise<void> };
 
 export default function OilTrackApp({ user }: { user: User }) {
@@ -809,6 +881,11 @@ export default function OilTrackApp({ user }: { user: User }) {
   const createWorkOrder = useCreateWorkOrder();
   const updateWorkOrder = useUpdateWorkOrder();
   const deleteWorkOrder = useDeleteWorkOrder();
+  const { data: inventory = [] } = useInventory();
+  const createInventoryItem = useCreateInventoryItem();
+  const updateInventoryItem = useUpdateInventoryItem();
+  const deleteInventoryItem = useDeleteInventoryItem();
+  const adjustInventory = useAdjustInventoryByPartIds();
 
   const [pg, setPg] = useState('dashboard');
   const [trail, setTrail] = useState<{ p: string; id: string; lbl: string }[]>([]);
@@ -820,10 +897,19 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
   const [selectedOilSlips, setSelectedOilSlips] = useState<string[]>([]);
   const [showOilSlips, setShowOilSlips] = useState(false);
-  // NEW: dashboard revenue year selector, billing time-window filter, parts catalog search
+  // Dashboard revenue year selector
   const [dashYear, setDashYear] = useState<number>(new Date().getFullYear());
+  // Billing time-window filter + sort + batch export selection
   const [billRange, setBillRange] = useState<BillingRange>('30');
+  const [billSort, setBillSort] = useState<BillingSort>('date-new');
+  const [selectedForExport, setSelectedForExport] = useState<string[]>([]);
+  const [exporting, setExporting] = useState(false);
+  // Parts catalog search
   const [partsSearch, setPartsSearch] = useState('');
+  // Inventory page search
+  const [invSearch, setInvSearch] = useState('');
+  // Inventory add-item picker search
+  const [invPickerSearch, setInvPickerSearch] = useState('');
   const aiRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -847,14 +933,264 @@ export default function OilTrackApp({ user }: { user: User }) {
   const getPart = (part_number: string) => parts.find(p => p.part_number === part_number);
   const templatesForUnit = (unit_id: string) => templates.filter(t => t.unit_id === unit_id);
 
-  // Parse "YYYY-MM-DD" as a local date (avoids UTC shifting Jan 1 to Dec 31 in some timezones)
-  const yearOfServiceDate = (d: string | null | undefined): number | null => {
-    if (!d) return null;
-    const parts = d.split('-');
-    if (parts.length < 1) return null;
-    const y = Number(parts[0]);
-    return isNaN(y) ? null : y;
-  };
+  /**
+   * Shared bill-time logic — assigns an invoice number from company settings,
+   * deducts inventory for parts used, and marks the WO billed.
+   * On un-bill, adds inventory back and clears billed state.
+   * The invoice number is NOT released on unbill (it stays with the WO for history).
+   */
+  async function applyBilling(wo: WorkOrder, nowBilled: boolean): Promise<void> {
+    try {
+      let updates: Partial<WorkOrder> = {
+        billed: nowBilled,
+        billed_at: nowBilled ? new Date().toISOString() : null,
+      };
+
+      if (nowBilled) {
+        // ─── BILLING ─────────────────────────────────────────────
+        // Assign an invoice number only if WO doesn't already have one
+        if (!wo.invoice_number && company) {
+          const next = Number(company.next_invoice_number || 1150);
+          updates.invoice_number = next;
+          // Bump settings counter
+          await upsertCompany.mutateAsync({ ...company, next_invoice_number: next + 1 });
+        }
+        // Deduct inventory for tracked parts (only once per bill)
+        if (!wo.inventory_deducted && wo.parts_used && wo.parts_used.length > 0) {
+          // Resolve part_number → part_id for each line
+          const adjustments: { part_id: string; delta: number }[] = [];
+          for (const line of wo.parts_used) {
+            const p = parts.find(x => x.part_number === line.part_number);
+            if (p) adjustments.push({ part_id: p.part_id, delta: -Math.abs(Number(line.qty) || 0) });
+          }
+          if (adjustments.length > 0) {
+            await adjustInventory.mutateAsync(adjustments);
+          }
+          updates.inventory_deducted = true;
+        }
+      } else {
+        // ─── UN-BILLING ──────────────────────────────────────────
+        // Add inventory back IF we had previously deducted
+        if (wo.inventory_deducted && wo.parts_used && wo.parts_used.length > 0) {
+          const adjustments: { part_id: string; delta: number }[] = [];
+          for (const line of wo.parts_used) {
+            const p = parts.find(x => x.part_number === line.part_number);
+            if (p) adjustments.push({ part_id: p.part_id, delta: Math.abs(Number(line.qty) || 0) });
+          }
+          if (adjustments.length > 0) {
+            await adjustInventory.mutateAsync(adjustments);
+          }
+          updates.inventory_deducted = false;
+        }
+      }
+
+      await updateWorkOrder.mutateAsync({ work_order_id: wo.work_order_id, updates });
+
+      if (nowBilled) {
+        const invMsg = !wo.invoice_number && updates.invoice_number ? ` as INV-${updates.invoice_number}` : '';
+        showToast(`Marked billed${invMsg}`);
+      } else {
+        showToast('Marked unbilled — inventory restored');
+      }
+    } catch (err: any) {
+      showToast(`Failed: ${err?.message || 'Unknown error'}`, true);
+    }
+  }
+
+  /**
+   * Build a single invoice PDF (returns Blob).
+   * Mirrors the on-screen invoice layout: company header, Bill To, equipment, parts table, cost breakdown.
+   */
+  async function buildInvoicePdfBlob(wo: WorkOrder): Promise<Blob> {
+    const { default: jsPDF } = await import('jspdf');
+    const autoTableMod: any = await import('jspdf-autotable');
+    const autoTable = autoTableMod.default || autoTableMod;
+
+    const u = getUnit(wo.unit_id);
+    const c = getCustomer(wo.customer_id);
+    const e = u ? getEngine(u.engine_id) : null;
+
+    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+    const pw = doc.internal.pageSize.getWidth();
+    const ph = doc.internal.pageSize.getHeight();
+    const ml = 40, mr = 40, mt = 40;
+
+    // ─── Header ─────────────────────────────────────────
+    doc.setFont('helvetica', 'normal').setFontSize(10).setTextColor(0);
+    doc.text(company?.company_name || 'Your Company', ml, mt);
+    if (company?.address) {
+      const lines = company.address.split('\n');
+      doc.setFontSize(8).setTextColor(68);
+      lines.forEach((line, i) => doc.text(line, ml, mt + 12 + i * 10));
+    }
+
+    doc.setFontSize(20).setFont('helvetica', 'bold').setTextColor(0);
+    doc.text('INVOICE', pw - mr, mt + 5, { align: 'right' });
+    doc.setFontSize(11).setFont('helvetica', 'normal');
+    doc.text(wo.invoice_number ? `#${wo.invoice_number}` : 'Unbilled', pw - mr, mt + 22, { align: 'right' });
+    doc.setFontSize(8).setTextColor(68);
+    // Inline date formatter (MM/DD/YYYY)
+    const dateDisplay = (() => {
+      const [yy, mm, dd] = (wo.service_date || '').split('-');
+      return (mm && dd) ? `${mm}/${dd}/${yy}` : (wo.service_date || '');
+    })();
+    doc.text(`Unit: ${u?.unit_number || '—'}`, pw - mr, mt + 36, { align: 'right' });
+    doc.text(`Date: ${dateDisplay}`, pw - mr, mt + 48, { align: 'right' });
+    doc.text(`Terms: ${company?.payment_terms || 'Net 15'}`, pw - mr, mt + 60, { align: 'right' });
+
+    // ─── Bill To (window envelope position) ────────────
+    const btY = 170;
+    doc.setFontSize(8).setTextColor(140);
+    doc.text('BILL TO', ml, btY);
+    doc.setFontSize(10).setFont('helvetica', 'bold').setTextColor(0);
+    doc.text(c?.name || '', ml, btY + 14);
+    doc.setFont('helvetica', 'normal').setFontSize(10);
+    let y = btY + 28;
+    if (c?.contact_name) { doc.text(c.contact_name, ml, y); y += 12; }
+    if (c?.billing_address) {
+      c.billing_address.split('\n').forEach(line => { doc.text(line, ml, y); y += 12; });
+    }
+    if (c?.phone) { doc.text(`Phone: ${c.phone}`, ml, y); y += 12; }
+
+    // ─── Equipment summary ─────────────────────────────
+    const eqY = 300;
+    doc.setFontSize(8).setTextColor(140);
+    doc.text('EQUIPMENT', ml, eqY);
+    doc.setFontSize(10).setTextColor(0);
+    const eqLine = `${u?.unit_number || ''} — ${u?.nickname || u?.type || ''}` +
+      (u?.make ? ` · ${u.make} ${u.model || ''}` : '') +
+      (e?.name ? ` · Engine: ${e.name}` : '') +
+      (wo.engine_hours ? ` · Hours: ${wo.engine_hours.toLocaleString()}` : '') +
+      ` · Service: ${wo.tier}`;
+    const eqWrapped = doc.splitTextToSize(eqLine, pw - ml - mr);
+    doc.text(eqWrapped, ml, eqY + 14);
+    let afterEqY = eqY + 14 + eqWrapped.length * 11;
+
+    // ─── Parts table ───────────────────────────────────
+    const rows: (string | number)[][] = [];
+    if (!wo.customer_provided_filters) {
+      wo.parts_used.forEach(p => rows.push([
+        p.part_number, p.description, p.supplier, String(p.qty),
+        formatMoney(p.retail_price), formatMoney(p.line_total_retail),
+      ]));
+    }
+    if (wo.oil_used) {
+      const oilDesc = `${wo.oil_used.type} engine oil${wo.customer_provided_oil ? ' (customer supplied)' : ''}`;
+      rows.push([
+        '—', oilDesc, wo.customer_provided_oil ? 'Customer' : 'CAT',
+        `${wo.oil_used.gallons} gal`,
+        formatMoney(wo.oil_used.retail_per_gallon), formatMoney(wo.oil_used.total_retail),
+      ]);
+    }
+
+    let endY = afterEqY + 10;
+    if (rows.length > 0) {
+      autoTable(doc, {
+        startY: afterEqY + 10,
+        head: [['Part #', 'Description', 'Supplier', 'Qty', 'Retail', 'Total']],
+        body: rows,
+        styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
+        headStyles: { fillColor: [255, 255, 255], textColor: 0, fontStyle: 'bold', lineWidth: 0.5, lineColor: [0, 0, 0] },
+        columnStyles: {
+          0: { cellWidth: 65, fontStyle: 'bold' },
+          2: { cellWidth: 60 },
+          3: { halign: 'right', cellWidth: 50 },
+          4: { halign: 'right', cellWidth: 65 },
+          5: { halign: 'right', cellWidth: 70 },
+        },
+        margin: { left: ml, right: mr },
+      });
+      endY = (doc as any).lastAutoTable.finalY || endY;
+    }
+
+    // ─── Cost breakdown (right-aligned) ─────────────────
+    let cy = Math.max(endY + 24, ph - 240);
+    const feeEntries = Object.entries(wo.fees || {}).filter(([_, v]) => Number(v) > 0);
+    const labelX = pw - mr - 180;
+    const valX = pw - mr;
+    doc.setFontSize(10).setTextColor(0).setFont('helvetica', 'normal');
+    feeEntries.forEach(([k, v]) => {
+      const lbl = k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+      doc.text(lbl, labelX, cy);
+      doc.text(formatMoney(Number(v)), valX, cy, { align: 'right' });
+      cy += 13;
+    });
+    doc.setLineWidth(0.5).setDrawColor(160);
+    doc.line(labelX, cy, valX, cy); cy += 4;
+    doc.text('Parts + Oil (taxable)', labelX, cy);
+    doc.text(formatMoney(wo.subtotal_parts_oil || 0), valX, cy, { align: 'right' });
+    cy += 13;
+    doc.text(`Tax (${wo.tax_rate_percent}%)`, labelX, cy);
+    doc.text(formatMoney(wo.tax_amount || 0), valX, cy, { align: 'right' });
+    cy += 18;
+    // Total line
+    doc.setLineWidth(1).setDrawColor(0);
+    doc.line(labelX, cy - 4, valX, cy - 4);
+    doc.setFont('helvetica', 'bold').setFontSize(12);
+    doc.text('TOTAL', labelX, cy + 8);
+    doc.text(formatMoney(wo.total_retail || 0), valX, cy + 8, { align: 'right' });
+    doc.setLineWidth(0.75);
+    doc.line(labelX, cy + 14, valX, cy + 14);
+    doc.line(labelX, cy + 17, valX, cy + 17);
+
+    // ─── Notes ─────────────────────────────────────────
+    if (wo.notes) {
+      doc.setFont('helvetica', 'italic').setFontSize(8).setTextColor(90);
+      doc.text('Notes:', ml, ph - 90);
+      doc.setFont('helvetica', 'normal').setFontSize(8);
+      const wrap = doc.splitTextToSize(wo.notes, pw - ml - mr);
+      doc.text(wrap, ml, ph - 80);
+    }
+
+    // ─── Footer ────────────────────────────────────────
+    doc.setFont('helvetica', 'normal').setFontSize(8).setTextColor(100);
+    doc.setLineWidth(0.5).setDrawColor(150);
+    doc.line(ml, ph - 50, pw - mr, ph - 50);
+    const footerBits = [company?.company_name, company?.address?.replace(/\n/g, ', '), company?.phone, company?.email].filter(Boolean);
+    if (footerBits.length > 0) {
+      const footer = footerBits.join(' · ');
+      const fw = doc.splitTextToSize(footer, pw - ml - mr);
+      doc.text(fw, pw / 2, ph - 38, { align: 'center' });
+    }
+    if (company?.invoice_footer_notes) {
+      doc.setFontSize(7).setTextColor(120);
+      const w2 = doc.splitTextToSize(company.invoice_footer_notes, pw - ml - mr);
+      doc.text(w2, pw / 2, ph - 22, { align: 'center' });
+    }
+
+    return doc.output('blob');
+  }
+
+  /**
+   * Build invoice PDFs for a batch of WOs, package into a single zip, trigger download.
+   * Filenames: {unit}_{MMDDYYYY}.pdf, e.g. ITH-37_10152026.pdf
+   * Collisions (same unit + same date) get a numeric suffix.
+   */
+  async function batchExportInvoices(selectedWOs: WorkOrder[]): Promise<void> {
+    const { default: JSZip } = await import('jszip');
+    const { saveAs } = await import('file-saver');
+    const zip = new JSZip();
+
+    const used: Record<string, number> = {};
+    for (const wo of selectedWOs) {
+      const u = getUnit(wo.unit_id);
+      const unit = (u?.unit_number || 'UNIT').replace(/[^A-Za-z0-9_-]/g, '-');
+      const dateStr = fmtMMDDYYYY(wo.service_date);
+      let name = `${unit}_${dateStr}.pdf`;
+      if (used[name] != null) {
+        used[name] = (used[name] || 0) + 1;
+        name = `${unit}_${dateStr}_${used[name] + 1}.pdf`;
+      } else {
+        used[name] = 0;
+      }
+      const blob = await buildInvoicePdfBlob(wo);
+      zip.file(name, blob);
+    }
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const today = fmtMMDDYYYY(new Date());
+    saveAs(zipBlob, `invoices_${today}.zip`);
+  }
 
   async function buildWorkOrderFromTemplate(template: ServiceTemplate): Promise<string | null> {
     const u = getUnit(template.unit_id);
@@ -900,9 +1236,12 @@ export default function OilTrackApp({ user }: { user: User }) {
     try {
       const wo = await createWorkOrder.mutateAsync({
         customer_id: u.customer_id, unit_id: u.unit_id, service_template_id: template.template_id,
+        // Explicitly null so Postgres doesn't auto-assign from the old sequence default
+        invoice_number: null,
         status: 'open', tier: template.name, service_date: new Date().toISOString().split('T')[0],
         engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: custOil, notes: '',
         parts_used: partsUsed, oil_used: oil, fees, tax_rate_percent, ...totals, checklist,
+        billed: false, billed_at: null, inventory_deducted: false,
       } as any);
       return wo.work_order_id;
     } catch (err: any) {
@@ -927,9 +1266,12 @@ export default function OilTrackApp({ user }: { user: User }) {
     try {
       const wo = await createWorkOrder.mutateAsync({
         customer_id: u.customer_id, unit_id: u.unit_id, status: 'open', tier: 'Custom Service',
+        // Explicitly null so Postgres doesn't auto-assign from the old sequence default
+        invoice_number: null,
         service_date: new Date().toISOString().split('T')[0],
         engine_hours: 0, technician: '', customer_provided_filters: false, customer_provided_oil: !!(customer as any).provides_own_oil, notes: '',
         parts_used: [], oil_used: null, fees, tax_rate_percent, ...totals, checklist: [],
+        billed: false, billed_at: null, inventory_deducted: false,
       } as any);
       return wo.work_order_id;
     } catch (err: any) { showToast(`Failed: ${err?.message || 'Unknown error'}`, true); return null; }
@@ -980,6 +1322,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const iUnlock = 'M19 11H5a2 2 0 00-2 2v7a2 2 0 002 2h14a2 2 0 002-2v-7a2 2 0 00-2-2z M7 11V7a5 5 0 019.9-1';
   const iBill = 'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8';
   const iDrop = 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z';
+  const iInv = 'M20 7H4v13h16V7z M8 7V4a2 2 0 012-2h4a2 2 0 012 2v3 M4 11h16';
 
   async function handleSignOut() { const supabase = createClient(); await supabase.auth.signOut(); }
 
@@ -987,7 +1330,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     const open = workOrders.filter(w => w.status === 'open');
     const completed = workOrders.filter(w => w.status === 'complete');
 
-    // Years available in the dropdown = every year that has a completed WO, plus the current year
+    // Years that appear in completed WOs, plus the current year, newest first
     const availableYears = (() => {
       const years = new Set<number>();
       completed.forEach(w => {
@@ -1011,12 +1354,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="st">
             <div className="st-l" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
               <span>Revenue</span>
-              <select
-                className="st-yr-sel"
-                value={dashYear}
-                onChange={e => setDashYear(Number(e.target.value))}
-                aria-label="Filter revenue by year"
-              >
+              <select className="st-yr-sel" value={dashYear} onChange={e => setDashYear(Number(e.target.value))} aria-label="Filter revenue by year">
                 {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
@@ -1027,17 +1365,20 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="card">
             <div className="ch"><h3>Open Work Orders</h3></div>
             <table>
-              <thead><tr><th>Invoice #</th><th>Unit</th><th>Customer</th><th>Service</th><th>Date</th></tr></thead>
+              <thead><tr><th>Unit</th><th>Customer</th><th>Service</th><th>Date</th><th>Invoice #</th></tr></thead>
               <tbody>
-                {open.map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td>{getCustomer(w.customer_id)?.name}</td>
-                    <td><span className="tag tc">{w.tier}</span></td>
-                    <td className="m">{w.service_date}</td>
-                  </tr>
-                ))}
+                {open.map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td>{getCustomer(w.customer_id)?.name}</td>
+                      <td><span className="tag tc">{w.tier}</span></td>
+                      <td className="m">{w.service_date}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1046,17 +1387,20 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="ch"><h3>Recent Completed</h3></div>
           {completed.length === 0 ? (<div className="empty"><p>No completed work orders yet</p></div>) : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th>Total</th></tr></thead>
+              <thead><tr><th>Unit</th><th>Date</th><th>Customer</th><th>Total</th><th>Invoice #</th></tr></thead>
               <tbody>
-                {completed.slice(0, 8).map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{w.service_date}</td>
-                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
-                    <td className="m">{formatMoney(w.total_retail)}</td>
-                  </tr>
-                ))}
+                {completed.slice(0, 8).map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td className="m">{w.service_date}</td>
+                      <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                      <td className="m">{formatMoney(w.total_retail)}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1244,15 +1588,15 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="ch"><h3>History ({uWOs.length})</h3></div>
           {uWOs.length === 0 ? <div className="empty"><p>No work orders</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Date</th><th>Service</th><th>Status</th><th>Total</th></tr></thead>
+              <thead><tr><th>Date</th><th>Service</th><th>Status</th><th>Total</th><th>Invoice #</th></tr></thead>
               <tbody>
                 {uWOs.map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{w.service_date}</td>
+                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u.unit_number)}>
+                    <td className="m" style={{ fontWeight: 700 }}>{w.service_date}</td>
                     <td><span className="tag tc">{w.tier}</span></td>
                     <td><span className={`tag ${w.status === 'complete' ? 'tg' : 'ta'}`}>{w.status}</span></td>
                     <td className="m">{formatMoney(w.total_retail)}</td>
+                    <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1273,7 +1617,7 @@ export default function OilTrackApp({ user }: { user: User }) {
 
     const togChecklist = (i: number) => { const newList = wo.checklist.map((it, j) => j === i ? { ...it, done: !it.done } : it); updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { checklist: newList } }); };
     const updField = (k: string, v: any) => updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { [k]: v } });
-    // NOTE: now accepts a number directly (from LocalNumberInput). Kept backwards-compatible with string.
+    // Accepts number directly (from LocalNumberInput) or string (backwards-compatible)
     const updFee = (k: string, v: number | string) => {
       const num = typeof v === 'number' ? v : (Number(v) || 0);
       const newFees = { ...wo.fees, [k]: num };
@@ -1313,10 +1657,9 @@ export default function OilTrackApp({ user }: { user: User }) {
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { status: 'open', completed_at: null as any } });
       showToast('Work order unlocked for editing');
     };
-    const toggleBilled = () => {
+    const toggleBilled = async () => {
       const nowBilled = !(wo as any).billed;
-      updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { billed: nowBilled, billed_at: nowBilled ? new Date().toISOString() : null as any } as any });
-      showToast(nowBilled ? 'Marked as billed' : 'Marked as unbilled');
+      await applyBilling(wo, nowBilled);
     };
     const handleDelete = async () => {
       try { await deleteWorkOrder.mutateAsync(wo.work_order_id); showToast('Work order deleted'); back(); }
@@ -1343,7 +1686,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           </div>
           <div className="inv">
             <div className="lbl">Invoice</div>
-            <div className="num">INV-{wo.invoice_number}</div>
+            <div className="num">{wo.invoice_number ? `INV-${wo.invoice_number}` : 'DRAFT'}</div>
             <div className="date">Date: {fmtDateUS(wo.service_date)}</div>
             <div className="date">Terms: {company?.payment_terms || 'Net 15'}</div>
           </div>
@@ -1369,8 +1712,11 @@ export default function OilTrackApp({ user }: { user: User }) {
         {/* SCREEN HEADER */}
         <div className="wh">
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-.03em' }}>Work Order {formatInvoiceNumber(wo.invoice_number)}</div>
-            <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 2 }}>{c?.name} · {u?.unit_number} ({u?.nickname}) · {e?.name}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-.03em' }}>Work Order {u?.unit_number || woPrimaryId(wo, u)}</div>
+            <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 2 }}>
+              {c?.name} · {u?.nickname ? `${u.nickname} · ` : ''}{e?.name}
+              {wo.invoice_number ? <span style={{ marginLeft: 8, fontFamily: "'IBM Plex Mono',monospace", color: 'var(--tx3)' }}>· {invNumDisplay(wo)}</span> : <span style={{ marginLeft: 8, color: 'var(--am)', fontSize: 11, fontWeight: 600 }}>· UNBILLED (no invoice # yet)</span>}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", background: isOpen ? 'var(--am2)' : 'var(--gn2)', color: isOpen ? 'var(--am)' : 'var(--gn)' }}>{wo.status.toUpperCase()}</span>
@@ -1395,7 +1741,7 @@ export default function OilTrackApp({ user }: { user: User }) {
               className="btn bs bd2btn"
               onClick={() => setModal({
                 t: 'confirmDelete',
-                what: `Work Order INV-${wo.invoice_number}${!isOpen ? ' (a COMPLETED work order)' : ''}`,
+                what: `Work Order ${u?.unit_number || woPrimaryId(wo, u)}${wo.invoice_number ? ` (INV-${wo.invoice_number})` : ''}${!isOpen ? ' — a COMPLETED work order' : ''}`,
                 danger: true,
                 onConfirm: handleDelete,
               })}
@@ -1426,7 +1772,7 @@ export default function OilTrackApp({ user }: { user: User }) {
               />
             ) : <p className="m">{wo.engine_hours || '—'}</p>}</div>
             <div><label>Technician</label>{isOpen ? <input value={wo.technician} onChange={ev => updField('technician', ev.target.value)} placeholder="Name" style={{ ...inp, width: 140 }} /> : <p>{wo.technician || '—'}</p>}</div>
-            <div><label>Invoice #</label><p className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(wo.invoice_number)}</p></div>
+            <div><label>Invoice #</label><p className="m" style={{ fontWeight: 700, color: wo.invoice_number ? 'var(--tx)' : 'var(--am)' }}>{wo.invoice_number ? `INV-${wo.invoice_number}` : 'Unbilled'}</p></div>
             {isOpen && (
               <div><label>Cust. Filters</label>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginTop: 2 }}>
@@ -1668,18 +2014,21 @@ export default function OilTrackApp({ user }: { user: User }) {
           <p style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Completed work orders with an oil analysis. Select, print, then mark printed.</p>
           {pending.length === 0 ? <div className="empty"><p>No pending oil slips</p></div> : (
             <table>
-              <thead><tr><th style={{ width: 30 }}></th><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th></th></tr></thead>
+              <thead><tr><th style={{ width: 30 }}></th><th>Unit</th><th>Date</th><th>Customer</th><th>Invoice #</th><th></th></tr></thead>
               <tbody>
-                {pending.map(w => (
-                  <tr key={w.work_order_id} onClick={() => toggleSlip(w.work_order_id)} style={{ cursor: 'pointer' }}>
-                    <td><input type="checkbox" checked={selectedOilSlips.includes(w.work_order_id)} readOnly style={{ pointerEvents: 'none', accentColor: 'var(--ac)' }} /></td>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{fmtDateUS(w.service_date)}</td>
-                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
-                    <td onClick={ev => ev.stopPropagation()}><button className="btn bs" onClick={() => markSlipsPrinted([w.work_order_id], true)}>{IC(iChk, 13)} Printed</button></td>
-                  </tr>
-                ))}
+                {pending.map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => toggleSlip(w.work_order_id)} style={{ cursor: 'pointer' }}>
+                      <td><input type="checkbox" checked={selectedOilSlips.includes(w.work_order_id)} readOnly style={{ pointerEvents: 'none', accentColor: 'var(--ac)' }} /></td>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td className="m">{fmtDateUS(w.service_date)}</td>
+                      <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                      <td onClick={ev => ev.stopPropagation()}><button className="btn bs" onClick={() => markSlipsPrinted([w.work_order_id], true)}>{IC(iChk, 13)} Printed</button></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1688,18 +2037,21 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="ch"><h3>Printed ({printed.length})</h3></div>
           {printed.length === 0 ? <div className="empty"><p>None yet</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Service Date</th><th>Unit</th><th>Customer</th><th>Printed</th><th></th></tr></thead>
+              <thead><tr><th>Unit</th><th>Service Date</th><th>Customer</th><th>Invoice #</th><th>Printed</th><th></th></tr></thead>
               <tbody>
-                {printed.slice(0, 30).map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{fmtDateUS(w.service_date)}</td>
-                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
-                    <td className="m">{(w as any).oil_slip_printed_at ? new Date((w as any).oil_slip_printed_at).toLocaleDateString() : '—'}</td>
-                    <td onClick={ev => ev.stopPropagation()}><button className="btn bs bg" onClick={() => markSlipsPrinted([w.work_order_id], false)}>Undo</button></td>
-                  </tr>
-                ))}
+                {printed.slice(0, 30).map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td className="m">{fmtDateUS(w.service_date)}</td>
+                      <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                      <td className="m">{(w as any).oil_slip_printed_at ? new Date((w as any).oil_slip_printed_at).toLocaleDateString() : '—'}</td>
+                      <td onClick={ev => ev.stopPropagation()}><button className="btn bs bg" onClick={() => markSlipsPrinted([w.work_order_id], false)}>Undo</button></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1717,17 +2069,20 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="ch"><h3>Open ({open.length})</h3></div>
           {open.length === 0 ? <div className="empty"><p>No open work orders</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Unit</th><th>Customer</th><th>Service</th><th>Date</th></tr></thead>
+              <thead><tr><th>Unit</th><th>Customer</th><th>Service</th><th>Date</th><th>Invoice #</th></tr></thead>
               <tbody>
-                {open.map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td>{getCustomer(w.customer_id)?.name}</td>
-                    <td><span className="tag tc">{w.tier}</span></td>
-                    <td className="m">{w.service_date}</td>
-                  </tr>
-                ))}
+                {open.map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td>{getCustomer(w.customer_id)?.name}</td>
+                      <td><span className="tag tc">{w.tier}</span></td>
+                      <td className="m">{w.service_date}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1736,18 +2091,21 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="ch"><h3>Completed ({done.length})</h3></div>
           {done.length === 0 ? <div className="empty"><p>None yet</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th>Service</th><th>Total</th></tr></thead>
+              <thead><tr><th>Unit</th><th>Date</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th></tr></thead>
               <tbody>
-                {done.slice(0, 20).map(w => (
-                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                    <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{w.service_date}</td>
-                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
-                    <td><span className="tag tc">{w.tier}</span></td>
-                    <td className="m">{formatMoney(w.total_retail)}</td>
-                  </tr>
-                ))}
+                {done.slice(0, 20).map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                      <td className="m">{w.service_date}</td>
+                      <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                      <td><span className="tag tc">{w.tier}</span></td>
+                      <td className="m">{formatMoney(w.total_retail)}</td>
+                      <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1763,19 +2121,22 @@ export default function OilTrackApp({ user }: { user: User }) {
         <div className="ch"><h3>Service History ({all.length})</h3></div>
         {all.length === 0 ? <div className="empty"><p>No history yet</p></div> : (
           <table>
-            <thead><tr><th>Invoice #</th><th>Date</th><th>Unit</th><th>Customer</th><th>Service</th><th>Hours</th><th>Total</th></tr></thead>
+            <thead><tr><th>Unit</th><th>Date</th><th>Customer</th><th>Service</th><th>Hours</th><th>Total</th><th>Invoice #</th></tr></thead>
             <tbody>
-              {all.map(w => (
-                <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>
-                  <td className="m" style={{ fontWeight: 700 }}>{formatInvoiceNumber(w.invoice_number)}</td>
-                  <td className="m">{w.service_date}</td>
-                  <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                  <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
-                  <td><span className="tag tc">{w.tier}</span></td>
-                  <td className="m">{w.engine_hours || '—'}</td>
-                  <td className="m">{formatMoney(w.total_retail)}</td>
-                </tr>
-              ))}
+              {all.map(w => {
+                const u = getUnit(w.unit_id);
+                return (
+                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                    <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                    <td className="m">{w.service_date}</td>
+                    <td style={{ color: 'var(--tx2)' }}>{getCustomer(w.customer_id)?.name}</td>
+                    <td><span className="tag tc">{w.tier}</span></td>
+                    <td className="m">{w.engine_hours || '—'}</td>
+                    <td className="m">{formatMoney(w.total_retail)}</td>
+                    <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -1784,42 +2145,60 @@ export default function OilTrackApp({ user }: { user: User }) {
   };
 
   const renderBilling = () => {
-    // Filter helpers for the selected time window.
-    // Billed section filters by billed_at ("in the last N days I billed $X").
-    // Unbilled section filters by service_date (older service = more urgent to invoice).
+    // ─── Time window filter ───────────────────────────────────────
     const nowMs = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
     const cutoffMs =
       billRange === 'all' ? 0 :
       billRange === 'year' ? nowMs - 365 * dayMs :
       nowMs - Number(billRange) * dayMs;
-
     const inRange = (dateStr: string | null | undefined) => {
       if (billRange === 'all') return true;
       if (!dateStr) return false;
       const t = new Date(dateStr).getTime();
-      if (isNaN(t)) return false;
-      return t >= cutoffMs;
+      return !isNaN(t) && t >= cutoffMs;
+    };
+
+    // ─── Sort comparator ──────────────────────────────────────────
+    const sortFn = (a: WorkOrder, b: WorkOrder): number => {
+      switch (billSort) {
+        case 'date-old':   return (a.service_date || '').localeCompare(b.service_date || '');
+        case 'price-high': return (b.total_retail || 0) - (a.total_retail || 0);
+        case 'price-low':  return (a.total_retail || 0) - (b.total_retail || 0);
+        case 'inv-high':   return (b.invoice_number || 0) - (a.invoice_number || 0);
+        case 'inv-low':    return (a.invoice_number || Number.MAX_SAFE_INTEGER) - (b.invoice_number || Number.MAX_SAFE_INTEGER);
+        case 'cust':       return (getCustomer(a.customer_id)?.name || '').localeCompare(getCustomer(b.customer_id)?.name || '');
+        case 'date-new':
+        default:           return (b.service_date || '').localeCompare(a.service_date || '');
+      }
     };
 
     const completed = workOrders.filter(w => w.status === 'complete');
-    const unbilled = completed.filter(w => !(w as any).billed && inRange(w.service_date));
-    const billed = completed.filter(w => (w as any).billed && inRange((w as any).billed_at));
+    // Unbilled filters by service_date (older = more urgent); Billed filters by billed_at ("in last N days I billed")
+    const unbilled = completed.filter(w => !(w as any).billed && inRange(w.service_date)).sort(sortFn);
+    const billed   = completed.filter(w =>  (w as any).billed && inRange((w as any).billed_at)).sort(sortFn);
     const unbilledTotal = unbilled.reduce((s, w) => s + (w.total_retail || 0), 0);
     const billedTotal = billed.reduce((s, w) => s + (w.total_retail || 0), 0);
 
-    const markBilled = (w: WorkOrder, nowBilled: boolean) => {
-      updateWorkOrder.mutate({ work_order_id: w.work_order_id, updates: { billed: nowBilled, billed_at: nowBilled ? new Date().toISOString() : null as any } as any });
-      showToast(nowBilled ? 'Marked as billed' : 'Marked as unbilled');
-    };
+    const rangeLabel = (r: BillingRange) => ({
+      '30': 'Last 30 days', '60': 'Last 60 days', '90': 'Last 90 days', 'year': 'Last year', 'all': 'All time',
+    }[r]);
 
-    const rangeLabel = (r: BillingRange) => {
-      switch (r) {
-        case '30': return 'Last 30 days';
-        case '60': return 'Last 60 days';
-        case '90': return 'Last 90 days';
-        case 'year': return 'Last year';
-        case 'all': return 'All time';
+    const toggleSel = (id: string) => setSelectedForExport(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+    const selectAllBilled = () => setSelectedForExport(billed.map(w => w.work_order_id));
+    const clearSel = () => setSelectedForExport([]);
+
+    const doBatchExport = async () => {
+      if (selectedForExport.length === 0) return;
+      setExporting(true);
+      try {
+        const selectedWOs = billed.filter(w => selectedForExport.includes(w.work_order_id));
+        await batchExportInvoices(selectedWOs);
+        showToast(`Downloaded ${selectedWOs.length} invoice${selectedWOs.length === 1 ? '' : 's'}`);
+      } catch (err: any) {
+        showToast(`Export failed: ${err?.message || 'Unknown error'}`, true);
+      } finally {
+        setExporting(false);
       }
     };
 
@@ -1827,18 +2206,33 @@ export default function OilTrackApp({ user }: { user: User }) {
 
     return (
       <>
-        {/* Time-period filter */}
+        {/* Filter + sort + batch export bar */}
         <div className="filterbar">
-          <span className="lbl">Time period:</span>
+          <span className="lbl">Period:</span>
           {(['30', '60', '90', 'year', 'all'] as BillingRange[]).map(r => (
-            <button
-              key={r}
-              className={`btn bs ${billRange === r ? 'bp' : ''}`}
-              onClick={() => setBillRange(r)}
-            >
-              {rangeLabel(r)}
-            </button>
+            <button key={r} className={`btn bs ${billRange === r ? 'bp' : ''}`} onClick={() => setBillRange(r)}>{rangeLabel(r)}</button>
           ))}
+          <div className="sep" />
+          <span className="lbl">Sort:</span>
+          <select className="sort-sel" value={billSort} onChange={e => setBillSort(e.target.value as BillingSort)}>
+            <option value="date-new">Date (newest first)</option>
+            <option value="date-old">Date (oldest first)</option>
+            <option value="price-high">Price (high to low)</option>
+            <option value="price-low">Price (low to high)</option>
+            <option value="inv-high">Invoice # (high to low)</option>
+            <option value="inv-low">Invoice # (low to high)</option>
+            <option value="cust">Customer (A–Z)</option>
+          </select>
+          <div style={{ flex: 1 }} />
+          {selectedForExport.length > 0 && (
+            <>
+              <span style={{ fontSize: 11, color: 'var(--tx2)' }}>{selectedForExport.length} selected</span>
+              <button className="btn bs bg" onClick={clearSel}>Clear</button>
+              <button className="btn bs bp" onClick={doBatchExport} disabled={exporting}>
+                {IC(iPrint, 13)} {exporting ? 'Building zip…' : `Download ${selectedForExport.length} PDF${selectedForExport.length === 1 ? '' : 's'} (zip)`}
+              </button>
+            </>
+          )}
         </div>
 
         <div className="stats">
@@ -1849,44 +2243,212 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
 
         <div className="card">
-          <div className="ch"><h3>Unbilled — Needs Invoicing ({unbilled.length}) <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span></h3></div>
-          {unbilled.length === 0 ? <div className="empty"><p>All caught up for this time period! Nothing waiting to be billed.</p></div> : (
+          <div className="ch">
+            <h3>Unbilled — Needs Invoicing ({unbilled.length})
+              <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span>
+            </h3>
+          </div>
+          {unbilled.length === 0 ? <div className="empty"><p>All caught up for this period! Nothing waiting to be billed.</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
+              <thead><tr><th>Unit</th><th>Date</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
               <tbody>
-                {unbilled.map(w => (
-                  <tr key={w.work_order_id}>
-                    <td className="m" style={{ fontWeight: 700, cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{w.service_date}</td>
-                    <td>{getCustomer(w.customer_id)?.name}</td>
-                    <td style={{ fontWeight: 600, color: 'var(--ac)' }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td><span className="tag tc">{w.tier}</span></td>
-                    <td className="m" style={{ fontWeight: 600 }}>{formatMoney(w.total_retail)}</td>
-                    <td><button className="btn bs bp" onClick={() => markBilled(w, true)}>{IC(iChk, 13)} Billed</button></td>
-                  </tr>
-                ))}
+                {unbilled.map(w => {
+                  const u = getUnit(w.unit_id);
+                  return (
+                    <tr key={w.work_order_id}>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>{u?.unit_number || '—'}</td>
+                      <td className="m">{w.service_date}</td>
+                      <td>{getCustomer(w.customer_id)?.name}</td>
+                      <td><span className="tag tc">{w.tier}</span></td>
+                      <td className="m" style={{ fontWeight: 600 }}>{formatMoney(w.total_retail)}</td>
+                      <td className="m" style={{ color: 'var(--tx3)', fontStyle: 'italic' }}>— unbilled</td>
+                      <td><button className="btn bs bp" onClick={() => applyBilling(w, true)}>{IC(iChk, 13)} Billed</button></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
         </div>
 
         <div className="card">
-          <div className="ch"><h3>Billed ({billed.length}) <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span></h3></div>
-          {billed.length === 0 ? <div className="empty"><p>Nothing billed in this time period</p></div> : (
+          <div className="ch">
+            <h3>Billed ({billed.length})
+              <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tx3)', marginLeft: 6 }}>· {activeLabel}</span>
+            </h3>
+            {billed.length > 0 && (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn bs bg" onClick={selectAllBilled}>Select all</button>
+                <button className="btn bs bg" onClick={clearSel}>Clear</button>
+              </div>
+            )}
+          </div>
+          {billed.length === 0 ? <div className="empty"><p>Nothing billed in this period</p></div> : (
             <table>
-              <thead><tr><th>Invoice #</th><th>Billed On</th><th>Customer</th><th>Unit</th><th>Service</th><th>Total</th><th></th></tr></thead>
+              <thead><tr><th style={{ width: 28 }}></th><th>Unit</th><th>Billed</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
               <tbody>
-                {billed.map(w => (
-                  <tr key={w.work_order_id}>
-                    <td className="m" style={{ fontWeight: 700, cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, formatInvoiceNumber(w.invoice_number))}>{formatInvoiceNumber(w.invoice_number)}</td>
-                    <td className="m">{(w as any).billed_at ? new Date((w as any).billed_at).toLocaleDateString() : '—'}</td>
-                    <td>{getCustomer(w.customer_id)?.name}</td>
-                    <td style={{ fontWeight: 600 }}>{getUnit(w.unit_id)?.unit_number}</td>
-                    <td><span className="tag tc">{w.tier}</span></td>
-                    <td className="m">{formatMoney(w.total_retail)}</td>
-                    <td><button className="btn bs bg" onClick={() => markBilled(w, false)}>Undo</button></td>
-                  </tr>
-                ))}
+                {billed.map(w => {
+                  const u = getUnit(w.unit_id);
+                  const sel = selectedForExport.includes(w.work_order_id);
+                  return (
+                    <tr key={w.work_order_id} style={{ background: sel ? 'var(--ac3)' : undefined }}>
+                      <td onClick={() => toggleSel(w.work_order_id)} style={{ cursor: 'pointer' }}><input type="checkbox" className="batch-cb" checked={sel} readOnly style={{ pointerEvents: 'none' }} /></td>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>{u?.unit_number || '—'}</td>
+                      <td className="m">{(w as any).billed_at ? new Date((w as any).billed_at).toLocaleDateString() : '—'}</td>
+                      <td>{getCustomer(w.customer_id)?.name}</td>
+                      <td><span className="tag tc">{w.tier}</span></td>
+                      <td className="m">{formatMoney(w.total_retail)}</td>
+                      <td>
+                        <span className="inv-cell m" onClick={() => setModal({ t: 'editInvoiceNumber', wo: w })} title="Click to edit invoice #">
+                          {w.invoice_number ? <strong>{w.invoice_number}</strong> : <em className="inv-missing">missing</em>}
+                          <span className="pencil">✎</span>
+                        </span>
+                      </td>
+                      <td><button className="btn bs bg" onClick={() => applyBilling(w, false)}>Undo</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  const renderInventory = () => {
+    // Join inventory rows with part info
+    const invByPartId: Record<string, InventoryItem> = {};
+    inventory.forEach(it => { invByPartId[it.part_id] = it; });
+
+    const q = invSearch.trim().toLowerCase();
+    type InvRow = { inv: InventoryItem; part: Part | undefined };
+    const rows: InvRow[] = inventory.map(inv => ({ inv, part: parts.find(p => p.part_id === inv.part_id) }));
+    const filtered = q ? rows.filter(({ part }) =>
+      part && (
+        (part.part_number || '').toLowerCase().includes(q) ||
+        (part.description || '').toLowerCase().includes(q) ||
+        (part.manufacturer || '').toLowerCase().includes(q) ||
+        (part.category || '').toLowerCase().includes(q)
+      )
+    ) : rows;
+
+    const totalItems = inventory.length;
+    const lowStock = rows.filter(({ inv }) => inv.reorder_point != null && inv.quantity_on_hand <= Number(inv.reorder_point) && inv.quantity_on_hand > 0).length;
+    const outOfStock = rows.filter(({ inv }) => inv.quantity_on_hand <= 0).length;
+
+    const stockStatus = (inv: InventoryItem): { label: string; cls: string } => {
+      if (inv.quantity_on_hand <= 0) return { label: 'OUT', cls: 'inv-stock-out' };
+      if (inv.reorder_point != null && inv.quantity_on_hand <= Number(inv.reorder_point)) return { label: 'LOW', cls: 'inv-stock-low' };
+      return { label: 'OK', cls: 'inv-stock-ok' };
+    };
+
+    const commitQty = async (inv: InventoryItem, newQty: number) => {
+      if (newQty === inv.quantity_on_hand) return;
+      try {
+        await updateInventoryItem.mutateAsync({ inventory_id: inv.inventory_id, updates: { quantity_on_hand: newQty } });
+      } catch (err: any) { showToast(`Failed to update: ${err?.message || 'Unknown error'}`, true); }
+    };
+
+    const commitReorder = async (inv: InventoryItem, newVal: number) => {
+      const next = newVal > 0 ? newVal : null;
+      if (next === inv.reorder_point) return;
+      try {
+        await updateInventoryItem.mutateAsync({ inventory_id: inv.inventory_id, updates: { reorder_point: next } });
+      } catch (err: any) { showToast(`Failed to update: ${err?.message || 'Unknown error'}`, true); }
+    };
+
+    const handleRemove = (inv: InventoryItem, part: Part | undefined) => {
+      setModal({
+        t: 'confirmDelete',
+        what: `"${part?.part_number || 'this part'}" from inventory (part catalog entry stays)`,
+        onConfirm: async () => {
+          await deleteInventoryItem.mutateAsync(inv.inventory_id);
+          showToast('Removed from inventory');
+        },
+      });
+    };
+
+    return (
+      <>
+        <div className="stats">
+          <div className="st"><div className="st-l">Tracked Parts</div><div className="st-v" style={{ color: 'var(--ac)' }}>{totalItems}</div></div>
+          <div className="st"><div className="st-l">Low Stock</div><div className="st-v" style={{ color: lowStock ? 'var(--am)' : 'var(--gn)' }}>{lowStock}</div></div>
+          <div className="st"><div className="st-l">Out of Stock</div><div className="st-v" style={{ color: outOfStock ? 'var(--rd)' : 'var(--gn)' }}>{outOfStock}</div></div>
+          <div className="st"><div className="st-l">Catalog Parts</div><div className="st-v" style={{ color: 'var(--tx2)' }}>{parts.length}</div></div>
+        </div>
+
+        <div className="card">
+          <div className="ch">
+            <h3>Inventory ({q ? `${filtered.length} of ${totalItems}` : totalItems})</h3>
+            <button className="btn bs bp" onClick={() => { setInvPickerSearch(''); setModal({ t: 'addInventory' }); }}>{IC(iPlus, 15)} Add Part to Inventory</button>
+          </div>
+          <p style={{ fontSize: 11.5, color: 'var(--tx2)', marginBottom: 10 }}>
+            Quantities auto-deduct when you mark a work order billed. If you un-bill, the quantity comes back.
+            Set a Reorder At to get a LOW tag when stock drops to that level.
+          </p>
+
+          {totalItems > 0 && (
+            <div style={{ position: 'relative', marginBottom: 10 }}>
+              <input
+                type="text"
+                value={invSearch}
+                onChange={ev => setInvSearch(ev.target.value)}
+                placeholder="Search inventory by part #, description, manufacturer, or category..."
+                style={{ width: '100%', padding: '8px 32px 8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', color: 'var(--tx)' }}
+              />
+              {invSearch && (
+                <button onClick={() => setInvSearch('')} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}>✕</button>
+              )}
+            </div>
+          )}
+
+          {totalItems === 0 ? (
+            <div className="empty"><p>No parts tracked yet. Click "Add Part to Inventory" to start tracking a part from your catalog.</p></div>
+          ) : filtered.length === 0 ? (
+            <div className="empty"><p>No tracked parts match "{invSearch}"</p></div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Part #</th>
+                  <th>Description</th>
+                  <th>Mfr</th>
+                  <th>On Hand</th>
+                  <th>Reorder At</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(({ inv, part }) => {
+                  const status = stockStatus(inv);
+                  return (
+                    <tr key={inv.inventory_id} style={{ cursor: 'default' }}>
+                      <td className="m" style={{ fontWeight: 700 }}>{part?.part_number || <em style={{ color: 'var(--rd)' }}>missing</em>}</td>
+                      <td>{part?.description || <em style={{ color: 'var(--tx3)' }}>part deleted from catalog</em>}</td>
+                      <td>{part ? <span className="tag tb">{part.manufacturer}</span> : '—'}</td>
+                      <td>
+                        <LocalNumberInput
+                          value={Number(inv.quantity_on_hand) || 0}
+                          step="1"
+                          onCommit={v => commitQty(inv, v)}
+                          style={{ padding: '3px 6px', fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", width: 70, textAlign: 'center', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 4, color: 'var(--tx)', outline: 'none' }}
+                        />
+                      </td>
+                      <td>
+                        <LocalNumberInput
+                          value={Number(inv.reorder_point) || 0}
+                          step="1"
+                          onCommit={v => commitReorder(inv, v)}
+                          style={{ padding: '3px 6px', fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", width: 70, textAlign: 'center', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 4, color: 'var(--tx)', outline: 'none' }}
+                        />
+                      </td>
+                      <td><span className={`inv-stock ${status.cls}`}>{status.label}</span></td>
+                      <td><button className="btn bs bd2btn" onClick={() => handleRemove(inv, part)}>{IC(iTrash, 13)}</button></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1921,11 +2483,7 @@ export default function OilTrackApp({ user }: { user: User }) {
               style={{ width: '100%', padding: '8px 32px 8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', color: 'var(--tx)' }}
             />
             {partsSearch && (
-              <button
-                onClick={() => setPartsSearch('')}
-                title="Clear search"
-                style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
-              >✕</button>
+              <button onClick={() => setPartsSearch('')} title="Clear search" style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}>✕</button>
             )}
           </div>
         )}
@@ -2078,6 +2636,70 @@ export default function OilTrackApp({ user }: { user: User }) {
         await createTemplate.mutateAsync(form); showToast('Template copied'); setModal(null);
       }} />);
     }
+    if (modal.t === 'addInventory') {
+      // Pick which part from the catalog to start tracking
+      const trackedIds = new Set(inventory.map(i => i.part_id));
+      const untracked = parts.filter(p => !trackedIds.has(p.part_id));
+      const q = invPickerSearch.trim().toLowerCase();
+      const list = q ? untracked.filter(p =>
+        (p.part_number || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q) ||
+        (p.manufacturer || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q)
+      ) : untracked;
+
+      const addPart = async (part: Part) => {
+        try {
+          await createInventoryItem.mutateAsync({ part_id: part.part_id, quantity_on_hand: 0, reorder_point: null, notes: '' });
+          showToast(`${part.part_number} added to inventory`);
+          setInvPickerSearch('');
+        } catch (err: any) {
+          showToast(`Failed: ${err?.message || 'Unknown error'}`, true);
+        }
+      };
+
+      return (
+        <div className="mbg">
+          <div className="mdl">
+            <div className="mh">
+              <h3>Add Part to Inventory</h3>
+              <button className="btn bs bg" onClick={() => setModal(null)}>✕</button>
+            </div>
+            <div className="mb2">
+              <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 10 }}>
+                Pick a part from your catalog to start tracking inventory for it. Starts with 0 on hand — set the quantity after adding.
+              </p>
+              <input
+                type="text"
+                value={invPickerSearch}
+                onChange={e => setInvPickerSearch(e.target.value)}
+                placeholder="Search parts catalog..."
+                autoFocus
+                style={{ width: '100%', padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', marginBottom: 10 }}
+              />
+              {untracked.length === 0 ? (
+                <div className="empty"><p>Every catalog part is already being tracked. Add more parts to the Parts Catalog first.</p></div>
+              ) : list.length === 0 ? (
+                <div className="empty"><p>No untracked parts match "{invPickerSearch}"</p></div>
+              ) : (
+                <div className="inv-add-list">
+                  {list.map(p => (
+                    <div key={p.part_id} className="row" onClick={() => addPart(p)}>
+                      <span className="pn">{p.part_number}</span>
+                      <span className="desc">{p.description} — {p.manufacturer}</span>
+                      <span className="tag tb">{p.category}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="mf">
+              <button className="btn" onClick={() => setModal(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return null;
   };
 
@@ -2085,6 +2707,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     { id: 'dashboard', l: 'Dashboard', ic: iHome },
     { id: 'customers', l: 'Customers', ic: iUsers, ct: customers.length },
     { id: 'parts', l: 'Parts Catalog', ic: iBox, ct: parts.length },
+    { id: 'inventory', l: 'Inventory', ic: iInv, ct: inventory.length || undefined },
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
     { id: 'billing', l: 'Billing', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
@@ -2117,7 +2740,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     dashboard: renderDashboard, customers: renderCustomers, cust: renderCustDetail,
     unit: renderUnitDetail, wo: renderWO, workorders: renderWOs, history: renderHistory,
     parts: renderParts, engines: renderEngines, settings: renderSettings, ai: renderAi,
-    billing: renderBilling, oilslips: renderOilSlipsPage,
+    billing: renderBilling, oilslips: renderOilSlipsPage, inventory: renderInventory,
   };
 
   return (
