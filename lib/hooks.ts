@@ -11,6 +11,7 @@ import type {
   UnitServiceOverride,
   WorkOrder,
   CompanySettings,
+  InventoryItem,
 } from '@/types/database';
 
 // =============================================
@@ -443,5 +444,100 @@ export function useDeleteWorkOrder() {
       if (error) throw error;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['work_orders'] }),
+  });
+}
+
+// =============================================
+// INVENTORY
+// =============================================
+export function useInventory() {
+  return useQuery({
+    queryKey: ['inventory'],
+    queryFn: async (): Promise<InventoryItem[]> => {
+      const supabase = createClient();
+      const { data, error } = await supabase.from('inventory').select('*').order('created_at');
+      if (error) throw error;
+      return data || [];
+    },
+  });
+}
+
+export function useCreateInventoryItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (item: Partial<InventoryItem>) => {
+      const supabase = createClient();
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) throw new Error('Not signed in');
+      const { data, error } = await supabase.from('inventory').insert({ ...item, user_id: userData.user.id }).select().single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['inventory'] }),
+  });
+}
+
+export function useUpdateInventoryItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ inventory_id, updates }: { inventory_id: string; updates: Partial<InventoryItem> }) => {
+      const supabase = createClient();
+      const { data, error } = await supabase.from('inventory').update({ ...updates, updated_at: new Date().toISOString() }).eq('inventory_id', inventory_id).select().single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['inventory'] }),
+  });
+}
+
+export function useDeleteInventoryItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (inventory_id: string) => {
+      const supabase = createClient();
+      const { error } = await supabase.from('inventory').delete().eq('inventory_id', inventory_id);
+      if (error) throw error;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['inventory'] }),
+  });
+}
+
+/**
+ * Bulk-adjust several inventory rows at once by DELTA (positive to add, negative to subtract).
+ * Used when a work order is marked billed (deduct) or unbilled (add back).
+ * Silently skips part_ids that are not tracked.
+ */
+export function useAdjustInventoryByPartIds() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (adjustments: { part_id: string; delta: number }[]) => {
+      if (!adjustments.length) return;
+      const supabase = createClient();
+      // Fetch current rows for the given part_ids
+      const partIds = adjustments.map(a => a.part_id);
+      const { data: rows, error: fetchErr } = await supabase
+        .from('inventory')
+        .select('inventory_id, part_id, quantity_on_hand')
+        .in('part_id', partIds);
+      if (fetchErr) throw fetchErr;
+      if (!rows || rows.length === 0) return; // no tracked items
+
+      // Compute new quantities
+      const updates = rows.map(row => {
+        const adj = adjustments.find(a => a.part_id === row.part_id);
+        return {
+          inventory_id: row.inventory_id,
+          new_qty: Number(row.quantity_on_hand) + (adj?.delta || 0),
+        };
+      });
+
+      // Dispatch updates
+      await Promise.all(updates.map(u =>
+        supabase.from('inventory')
+          .update({ quantity_on_hand: u.new_qty, updated_at: new Date().toISOString() })
+          .eq('inventory_id', u.inventory_id)
+      ));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['inventory'] }),
   });
 }
