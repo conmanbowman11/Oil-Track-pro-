@@ -3,7 +3,12 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase';
-import { ModalShell, LocalNumberInput, NullableNumberInput } from '@/components/ui';
+import { ModalShell, LocalNumberInput, NullableNumberInput, IC as uiIC, ICONS } from '@/components/ui';
+import {
+  CustomerTabs, CustomerTypeBadge, CUSTOMER_TYPE_LABEL, FollowUpsWidget, FollowUpsPage,
+  useFollowUpBadgeCount, useOverdueCustomerIds,
+} from '@/components/crm';
+import { CustomerFilterOrders } from '@/components/filters';
 import {
   useCompanySettings,
   useUpsertCompanySettings,
@@ -364,6 +369,76 @@ body.printing-oil-slips .app{display:none}
   .oil-slip{margin:0 0 0.15in 0;width:100%}
   .osinput{background:#fff!important}
 }
+
+/* ===== Filter Sales + Customer Tracking ===== */
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.srch{width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);font-size:13px;font-family:'Outfit',sans-serif;outline:none;color:var(--tx)}
+.srch:focus{border-color:var(--ac)}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--bd2);margin-bottom:12px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:9px 12px;font-size:12.5px;font-weight:600;color:var(--tx2);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;white-space:nowrap;font-family:'Outfit',sans-serif;margin-bottom:-1px}
+.tab:hover{color:var(--tx)}
+.tab.on{color:var(--ac);border-bottom-color:var(--ac)}
+.tab .ct{font-size:10px;font-family:'IBM Plex Mono',monospace;background:var(--bg2);padding:1px 6px;border-radius:8px;color:var(--tx3)}
+.tab.on .ct{background:var(--ac3);color:var(--ac)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:5px 11px;border-radius:14px;border:1px solid var(--bd);background:var(--cd);font-size:11.5px;cursor:pointer;font-weight:600;color:var(--tx2);font-family:'Outfit',sans-serif;transition:all .1s}
+.chip:hover{border-color:var(--ac);color:var(--tx)}
+.chip.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.tred{background:var(--rd2);color:var(--rd)}
+.tgray{background:var(--bg2);color:var(--tx3)}
+.si .ct.alert{background:var(--rd);color:#fff}
+.cbx{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--tx)}
+.cbx input{accent-color:var(--ac);width:16px;height:16px}
+.linkish{color:var(--ac);cursor:pointer;font-weight:600}.linkish:hover{text-decoration:underline}
+.linkbtn{border:none;background:none;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;margin-left:6px;padding:0}
+.subcard{padding:12px;border:1px solid var(--bd);border-radius:var(--r);background:var(--cd2);margin-top:6px}
+.cust-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.g5{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.act-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+/* contacts */
+.ctc-list{display:flex;flex-direction:column;gap:8px}
+.ctc{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--bd2);border-radius:var(--r);background:var(--cd2)}
+/* follow-ups */
+.fu-sec{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:6px 0 4px}
+.fu-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 10px;border:1px solid var(--bd2);border-left:3px solid var(--bl);border-radius:var(--r);background:var(--cd2);margin-bottom:6px}
+.fu-row.overdue{border-left-color:var(--rd);background:var(--rd2)}
+.fu-row.done{opacity:.65;border-left-color:var(--gn)}
+.fu-actions{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+/* timeline */
+.tl{display:flex;flex-direction:column}
+.tl-item{display:flex;gap:10px;padding:10px 4px;border-bottom:1px solid var(--bd2)}
+.tl-item:last-child{border-bottom:none}
+.tl-item:hover{background:var(--cd2)}
+.tl-ic{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:var(--bg2);color:var(--tx2)}
+.tl-activity .tl-ic{background:var(--ac3);color:var(--ac)}
+.tl-followup .tl-ic{background:var(--bl2);color:var(--bl)}
+.tl-order .tl-ic{background:var(--gn2);color:var(--gn)}
+.tl-invoice .tl-ic{background:var(--am2);color:var(--am)}
+/* order lines */
+.lines{display:flex;flex-direction:column;gap:6px}
+.line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:8px 10px;border:1px solid var(--bd2);border-radius:var(--r);background:var(--cd2)}
+.line-main{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;min-width:200px}
+.line-nums{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.line-nums label{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--tx3);text-transform:uppercase;font-weight:600;letter-spacing:.04em}
+.num-in{width:72px;padding:4px 6px;text-align:right;background:var(--bg);border:1px solid var(--bd);border-radius:4px;font-size:12px;font-family:'IBM Plex Mono',monospace;color:var(--tx);outline:none}
+.num-in:focus{border-color:var(--ac)}
+.note-in{padding:3px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:4px;font-size:12px;font-family:'Outfit',sans-serif;color:var(--tx);outline:none;min-width:140px}
+.line-tot{min-width:74px;text-align:right;font-weight:700}
+/* order status stepper */
+.stepper{display:flex;gap:0;overflow-x:auto;padding-top:4px}
+.step{flex:1;min-width:76px;display:flex;flex-direction:column;align-items:center;position:relative;text-align:center}
+.step:not(:last-child)::after{content:'';position:absolute;top:11px;left:calc(50% + 13px);right:calc(-50% + 13px);height:2px;background:var(--bd2)}
+.step.done:not(:last-child)::after{background:var(--gn)}
+.step .dot{width:24px;height:24px;border-radius:50%;border:2px solid var(--bd);background:var(--cd);display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff}
+.step.done .dot{background:var(--gn);border-color:var(--gn)}
+.step.cur .dot{box-shadow:0 0 0 3px var(--ac3);border-color:var(--ac)}
+.step.cancelled .dot{background:var(--rd);border-color:var(--rd)}
+.step .lbl{font-size:11px;font-weight:600;margin-top:4px}
+.step .when{font-size:10px;color:var(--tx3);font-family:'IBM Plex Mono',monospace;min-height:13px}
+.rev-split{font-size:10.5px;color:var(--tx3);margin-top:2px;font-family:'IBM Plex Mono',monospace}
+
 `;
 
 // =============================================
@@ -373,6 +448,7 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
   const [form, setForm] = useState<Partial<Customer>>(
     initial || {
       name: '', contact_name: '', phone: '', email: '', billing_address: '', notes: '',
+      customer_type: 'service', status: 'active',
       default_fees: {
         labor_rate: 0, environmental_fee: 0, travel_charge: 0, service_supplies: 0,
         oil_sample_fee: 0, oil_retail_per_gallon: 0, oil_cost_per_gallon: 0,
@@ -394,6 +470,20 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
       title={initial?.customer_id ? 'Edit Customer' : 'Add Customer'}
       onClose={onClose} onSave={() => onSaveAsync(form)} saveDisabled={!form.name} size="lg"
     >
+      <div className="section-hdr">Customer Type</div>
+      <div className="chips" role="radiogroup" aria-label="Customer type">
+        {(['service', 'filter_only', 'both'] as const).map(t => (
+          <button key={t} type="button" className={`chip${(form.customer_type || 'service') === t ? ' on' : ''}`} onClick={() => setForm(p => ({ ...p, customer_type: t }))}>
+            {t === 'service' ? 'Service (oil changes)' : t === 'filter_only' ? 'Filter customer only' : 'Both'}
+          </button>
+        ))}
+      </div>
+      {initial?.customer_id && (
+        <label className="cbx" style={{ marginBottom: 10 }}>
+          <input type="checkbox" checked={form.status === 'inactive'} onChange={e => setForm(p => ({ ...p, status: e.target.checked ? 'inactive' : 'active' }))} />
+          Inactive customer (hidden from the default customer list)
+        </label>
+      )}
       <div className="section-hdr">Contact Info</div>
       <div className="fld"><label>Business Name</label><input value={form.name || ''} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} autoFocus /></div>
       <div className="fr">
@@ -404,6 +494,7 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
       <div className="fld"><label>Billing Address</label><textarea value={form.billing_address || ''} onChange={e => setForm(p => ({ ...p, billing_address: e.target.value }))} placeholder="Street address&#10;City, State ZIP" style={{ minHeight: 60, fontFamily: "'Outfit',sans-serif" }} /></div>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
 
+      {form.customer_type !== 'filter_only' && (<>
       <div className="section-hdr">Pricing & Fees (defaults for this customer)</div>
       <p style={{ fontSize: 11.5, color: 'var(--tx2)', marginBottom: 10 }}>
         These pre-fill on every new work order for this customer. You can still edit them per work order.
@@ -425,6 +516,7 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
         </label>
         <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>New work orders for this customer will record oil (type & gallons for oil slips) but charge $0.00 for it.</p>
       </div>
+      </>)}
     </ModalShell>
   );
 }
@@ -870,6 +962,13 @@ export default function OilTrackApp({ user }: { user: User }) {
   // Parts catalog search
   const [partsSearch, setPartsSearch] = useState('');
   const [partsCat, setPartsCat] = useState('all');
+  // Customer list filters
+  const [custType, setCustType] = useState<'all' | 'service' | 'filter_only' | 'both'>('all');
+  const [custStatus, setCustStatus] = useState<'active' | 'inactive' | 'all'>('active');
+  const [custSearch, setCustSearch] = useState('');
+  const [navOpen, setNavOpen] = useState(false);
+  const followUpBadge = useFollowUpBadgeCount();
+  const overdueCustIds = useOverdueCustomerIds();
   const [partsActive, setPartsActive] = useState<'active' | 'inactive' | 'all'>('active');
   // Inventory page search
   const [invSearch, setInvSearch] = useState('');
@@ -883,6 +982,8 @@ export default function OilTrackApp({ user }: { user: User }) {
   }, [showOilSlips]);
 
   const showToast = (msg: string, err = false) => { setToast({ msg, err }); setTimeout(() => setToast(null), err ? 4000 : 2500); };
+  // Generic "Are you sure?" used by the new Filter/CRM screens
+  const confirmAction = (what: string, onConfirm: () => Promise<void>) => setModal({ t: 'confirmDelete', what, onConfirm });
 
   const nav = useCallback((p: string, id: string, lbl: string) => { setTrail(pr => [...pr, { p, id, lbl }]); setPg(p); }, []);
   const back = useCallback(() => {
@@ -1312,6 +1413,7 @@ export default function OilTrackApp({ user }: { user: User }) {
 
     return (
       <>
+        <FollowUpsWidget nav={nav} toast={showToast} />
         <div className="stats">
           <div className="st"><div className="st-l">Customers</div><div className="st-v" style={{ color: 'var(--ac)' }}>{customers.length}</div></div>
           <div className="st"><div className="st-l">Fleet Units</div><div className="st-v" style={{ color: 'var(--bl)' }}>{units.length}</div></div>
@@ -1374,62 +1476,61 @@ export default function OilTrackApp({ user }: { user: User }) {
     );
   };
 
-  const renderCustomers = () => (
-    <div className="card">
-      <div className="ch"><h3>Customers</h3><button className="btn bs bp" onClick={() => setModal({ t: 'addCust' })}>{IC(iPlus, 15)} Add</button></div>
-      {loadingCustomers ? <div className="loading">Loading customers…</div> : customers.length === 0 ? (<div className="empty"><p>No customers yet. Click "Add" to create your first one.</p></div>) : (
-        <table>
-          <thead><tr><th>Name</th><th>Contact</th><th>Units</th><th>WOs</th></tr></thead>
-          <tbody>
-            {customers.map(c => (
-              <tr key={c.customer_id} onClick={() => nav('cust', c.customer_id, c.name)}>
-                <td style={{ fontWeight: 600 }}>{c.name}</td>
-                <td style={{ color: 'var(--tx2)' }}>{c.contact_name || '—'}</td>
-                <td className="m">{units.filter(u => u.customer_id === c.customer_id).length}</td>
-                <td className="m">{workOrders.filter(w => w.customer_id === c.customer_id).length}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
+  const renderCustomers = () => {
+    const q = custSearch.trim().toLowerCase();
+    const list = customers.filter(c =>
+      (custType === 'all' || (c.customer_type || 'service') === custType ||
+        (custType !== 'both' && c.customer_type === 'both')) &&
+      (custStatus === 'all' || (c.status || 'active') === custStatus) &&
+      (!q || c.name.toLowerCase().includes(q) || (c.contact_name || '').toLowerCase().includes(q) || (c.phone || '').includes(q))
+    );
+    return (
+      <div className="card">
+        <div className="ch"><h3>Customers ({list.length === customers.length ? customers.length : `${list.length} of ${customers.length}`})</h3><button className="btn bs bp" onClick={() => setModal({ t: 'addCust' })}>{IC(iPlus, 15)} Add</button></div>
+        {customers.length > 0 && (
+          <>
+            <input type="search" className="srch" value={custSearch} onChange={e => setCustSearch(e.target.value)} placeholder="Search customers by name, contact, or phone…" style={{ marginBottom: 8 }} />
+            <div className="chips">
+              {(['all', 'service', 'filter_only', 'both'] as const).map(t => (
+                <button key={t} className={`chip${custType === t ? ' on' : ''}`} onClick={() => setCustType(t)}>{t === 'all' ? 'All types' : t === 'service' ? 'Service' : t === 'filter_only' ? 'Filter' : 'Both'}</button>
+              ))}
+              <span style={{ width: 8 }} />
+              {(['active', 'inactive', 'all'] as const).map(st => (
+                <button key={st} className={`chip${custStatus === st ? ' on' : ''}`} onClick={() => setCustStatus(st)}>{st === 'active' ? 'Active' : st === 'inactive' ? 'Inactive' : 'Any status'}</button>
+              ))}
+            </div>
+          </>
+        )}
+        {loadingCustomers ? <div className="loading">Loading customers…</div> : customers.length === 0 ? (<div className="empty"><p>No customers yet. Click "Add" to create your first one.</p></div>) : list.length === 0 ? (<div className="empty"><p>No customers match these filters.</p></div>) : (
+          <div className="tw">
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Contact</th><th>Units</th><th>WOs</th><th title="Overdue follow-up"></th></tr></thead>
+            <tbody>
+              {list.map(c => (
+                <tr key={c.customer_id} onClick={() => nav('cust', c.customer_id, c.name)} style={{ opacity: c.status === 'inactive' ? 0.6 : 1 }}>
+                  <td style={{ fontWeight: 600 }}>{c.name}</td>
+                  <td><CustomerTypeBadge c={c} /></td>
+                  <td style={{ color: 'var(--tx2)' }}>{c.contact_name || '—'}</td>
+                  <td className="m">{units.filter(u => u.customer_id === c.customer_id).length}</td>
+                  <td className="m">{workOrders.filter(w => w.customer_id === c.customer_id).length}</td>
+                  <td>{overdueCustIds.has(c.customer_id) && <span className="tag tred" title="Has an overdue follow-up">{uiIC(ICONS.bell, 11)} overdue</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderCustDetail = () => {
     const c = customers.find(x => x.customer_id === curId);
     if (!c) return <div className="empty"><p>Not found</p></div>;
     const cu = units.filter(u => u.customer_id === curId);
     const cf = c.default_fees || {} as any;
-    return (
-      <>
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.03em' }}>{c.name}</div>
-              <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 2 }}>{c.billing_address || 'No address'}</div>
-            </div>
-            <button className="btn bs" onClick={() => setModal({ t: 'editCust', d: c })}>{IC(iEdit, 14)} Edit</button>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
-            {[['Contact', c.contact_name], ['Phone', c.phone], ['Email', c.email]].map(([l, v]) => (
-              <div key={l}>
-                <label style={{ fontSize: 10, color: 'var(--tx3)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600, display: 'block' }}>{l}</label>
-                <p style={{ fontSize: 13 }}>{v || '—'}</p>
-              </div>
-            ))}
-          </div>
-          <div style={{ borderTop: '1px solid var(--bd2)', paddingTop: 10 }}>
-            <label style={{ fontSize: 10, color: 'var(--ac)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', display: 'block', marginBottom: 6 }}>Default Pricing</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 8, fontSize: 12 }}>
-              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Travel</span><div className="m">{formatMoney(cf.travel_charge || 0)}</div></div>
-              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Env Fee</span><div className="m">{formatMoney(cf.environmental_fee || 0)}</div></div>
-              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Supplies</span><div className="m">{formatMoney(cf.service_supplies || 0)}</div></div>
-              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Oil Retail/gal</span><div className="m">{formatMoney(cf.oil_retail_per_gallon || 0)}</div></div>
-              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Oil Cost/gal</span><div className="m">{formatMoney(cf.oil_cost_per_gallon || 0)}</div></div>
-            </div>
-          </div>
-          {c.notes && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--tx2)', padding: '7px 10px', background: 'var(--bg)', borderRadius: 'var(--r)' }}>{c.notes}</div>}
-        </div>
+    const isFilterOnly = c.customer_type === 'filter_only';
+    const renderEquipment = () => (
         <div className="card">
           <div className="ch">
             <h3>Equipment ({cu.length})</h3>
@@ -1470,6 +1571,76 @@ export default function OilTrackApp({ user }: { user: User }) {
             </table>
           )}
         </div>
+    );
+    const custWOs = workOrders.filter(w => w.customer_id === c.customer_id);
+    const renderServices = () => (
+      <div className="card">
+        <div className="ch"><h3>Service Records ({custWOs.length})</h3></div>
+        {custWOs.length === 0 ? <div className="empty"><p>{isFilterOnly ? 'Filter-only customer — no oil change services.' : 'No services yet'}</p></div> : (
+          <div className="tw">
+          <table>
+            <thead><tr><th>Unit</th><th>Date</th><th>Service</th><th>Status</th><th>Total</th><th>Invoice #</th></tr></thead>
+            <tbody>
+              {custWOs.map(w => {
+                const u = getUnit(w.unit_id);
+                return (
+                  <tr key={w.work_order_id} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>
+                    <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u?.unit_number || '—'}</td>
+                    <td className="m">{w.service_date}</td>
+                    <td><span className="tag tc">{w.tier}</span></td>
+                    <td><span className={`tag ${w.status === 'complete' ? 'tg' : 'ta'}`}>{w.status}</span></td>
+                    <td className="m">{formatMoney(w.total_retail)}</td>
+                    <td className="m" style={{ color: w.invoice_number ? 'var(--tx)' : 'var(--tx3)', fontStyle: w.invoice_number ? 'normal' : 'italic' }}>{w.invoice_number ? `INV-${w.invoice_number}` : 'unbilled'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        )}
+      </div>
+    );
+    return (
+      <>
+        <div className="card">
+          <div className="cust-hd">
+            <div>
+              <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.03em' }}>{c.name}</div>
+              <div style={{ marginTop: 4 }}><CustomerTypeBadge c={c} /></div>
+              <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 4, whiteSpace: 'pre-wrap' }}>{c.billing_address || 'No address'}</div>
+            </div>
+            <button className="btn bs" onClick={() => setModal({ t: 'editCust', d: c })}>{IC(iEdit, 14)} Edit</button>
+          </div>
+          <div className="g3" style={{ marginBottom: 12 }}>
+            {[['Contact', c.contact_name], ['Phone', c.phone], ['Email', c.email]].map(([l, v]) => (
+              <div key={l}>
+                <label style={{ fontSize: 10, color: 'var(--tx3)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600, display: 'block' }}>{l}</label>
+                <p style={{ fontSize: 13 }}>{v || '—'}</p>
+              </div>
+            ))}
+          </div>
+          {!isFilterOnly && <div style={{ borderTop: '1px solid var(--bd2)', paddingTop: 10 }}>
+            <label style={{ fontSize: 10, color: 'var(--ac)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', display: 'block', marginBottom: 6 }}>Default Pricing</label>
+            <div className="g5" style={{ fontSize: 12 }}>
+              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Travel</span><div className="m">{formatMoney(cf.travel_charge || 0)}</div></div>
+              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Env Fee</span><div className="m">{formatMoney(cf.environmental_fee || 0)}</div></div>
+              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Supplies</span><div className="m">{formatMoney(cf.service_supplies || 0)}</div></div>
+              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Oil Retail/gal</span><div className="m">{formatMoney(cf.oil_retail_per_gallon || 0)}</div></div>
+              <div><span style={{ color: 'var(--tx3)', fontSize: 10 }}>Oil Cost/gal</span><div className="m">{formatMoney(cf.oil_cost_per_gallon || 0)}</div></div>
+            </div>
+          </div>}
+          {c.notes && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--tx2)', padding: '7px 10px', background: 'var(--bg)', borderRadius: 'var(--r)' }}>{c.notes}</div>}
+        </div>
+        <CustomerTabs
+          key={c.customer_id}
+          customer={c}
+          nav={nav}
+          toast={showToast}
+          confirmDelete={confirmAction}
+          renderEquipment={renderEquipment}
+          renderServices={renderServices}
+          renderFilterOrders={() => <CustomerFilterOrders customerId={c.customer_id} nav={nav} toast={showToast} />}
+        />
       </>
     );
   };
@@ -2704,6 +2875,7 @@ export default function OilTrackApp({ user }: { user: User }) {
 
   const menu = [
     { id: 'dashboard', l: 'Dashboard', ic: iHome },
+    { id: 'followups', l: 'Follow-ups', ic: ICONS.bell, ct: followUpBadge || undefined, alert: followUpBadge > 0 },
     { id: 'customers', l: 'Customers', ic: iUsers, ct: customers.length },
     { id: 'parts', l: 'Parts & Filters', ic: iBox, ct: parts.length },
     { id: 'inventory', l: 'Inventory', ic: iInv, ct: inventory.length || undefined },
@@ -2740,6 +2912,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     unit: renderUnitDetail, wo: renderWO, workorders: renderWOs, history: renderHistory,
     parts: renderParts, engines: renderEngines, settings: renderSettings, ai: renderAi,
     billing: renderBilling, oilslips: renderOilSlipsPage, inventory: renderInventory,
+    followups: () => <FollowUpsPage nav={nav} toast={showToast} />,
   };
 
   return (
@@ -2751,7 +2924,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           <nav className="sb-nav">
             {menu.map(m => (
               <div key={m.id} className={`si${active === m.id ? ' on' : ''}`} onClick={() => { setPg(m.id); setTrail([]); }}>
-                {IC(m.ic)}{m.l}{m.ct != null && <span className="ct">{m.ct}</span>}
+                {IC(m.ic)}{m.l}{m.ct != null && <span className={`ct${(m as any).alert ? ' alert' : ''}`}>{m.ct}</span>}
               </div>
             ))}
           </nav>
