@@ -222,3 +222,10 @@ export function isoDateOf(d: string | null | undefined): string {
   return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
 }
 export function telHref(phone: string): string { return `tel:${(phone || '').replace(/[^0-9+]/g, '')}`; }
+
+// file-saver is an old-style (CommonJS) module, so a dynamic import can hand back
+// saveAs either directly or wrapped in `default` depending on the bundler.
+export async function loadSaveAs(): Promise<(data: Blob, filename: string) => void> {
+  const mod: any = await import('file-saver');
+  return mod.saveAs || mod.default?.saveAs || mod.default;
+}

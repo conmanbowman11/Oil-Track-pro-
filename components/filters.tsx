@@ -16,11 +16,11 @@ import {
   calculateFilterOrderTotals, effectiveMarkupPct, filterSellPrice, formatMoney, round2,
 } from '@/lib/calculations';
 import {
-  ModalShell, LocalNumberInput, LocalTextInput, IC, ICONS, fmtDate, todayISO, addDaysISO, telHref,
+  ModalShell, LocalNumberInput, LocalTextInput, IC, ICONS, fmtDate, todayISO, addDaysISO, telHref, loadSaveAs,
 } from '@/components/ui';
 import { FollowUpModal, orderLabel, type NavFn, type ToastFn } from '@/components/crm';
 
-export type ConfirmFn = (what: string, fn: () => Promise<void>) => void;
+export type ConfirmFn = (what: string, fn: () => Promise<void>, opts?: { title: string; message: string; label: string }) => void;
 
 // ─────────────────────────────────────────────
 // Status helpers
@@ -753,7 +753,7 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
     setPdfBusy(true);
     try {
       const blob = await buildFilterInvoicePdfBlob({ order: o, items, customer: c, contact, units, company });
-      const { saveAs } = await import('file-saver');
+      const saveAs = await loadSaveAs();
       saveAs(blob, filterInvoiceFileName(o, c));
     } catch (err: any) { toast(`PDF failed: ${err?.message || 'Unknown error'}`, true); }
     finally { setPdfBusy(false); }
@@ -787,7 +787,8 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
             {o.billed && <button className="btn bs" onClick={() => setInvEdit(true)}>{IC(ICONS.edit, 13)} INV #</button>}
             <button className="btn bs" onClick={() => setFuOpen(true)}>{IC(ICONS.bell, 13)} Follow up</button>
             {!['paid', 'cancelled'].includes(o.status) && (
-              <button className="btn bs bd2btn" onClick={() => confirm(`cancel ${orderLabel(o)}`, async () => { await setOrder({ status: 'cancelled', cancelled_at: new Date().toISOString() }); toast(`${orderLabel(o)} cancelled`); })}>Cancel order</button>
+              <button className="btn bs bd2btn" onClick={() => confirm(orderLabel(o), async () => { await setOrder({ status: 'cancelled', cancelled_at: new Date().toISOString() }); toast(`${orderLabel(o)} cancelled`); },
+                { title: 'Cancel Order', label: 'Cancel order', message: `Cancel filter order ${orderLabel(o)}? You can bring it back with "Undo step".` })}>Cancel order</button>
             )}
             {(o.status === 'cancelled' || (o.status === 'requested' && !o.billed)) && (
               <button className="btn bs bd2btn" aria-label="Delete order" onClick={() => confirm(`filter order ${orderLabel(o)} (permanently)`, async () => { await deleteOrder.mutateAsync(o.filter_order_id); toast('Order deleted'); back(); })}>{IC(ICONS.trash, 13)}</button>

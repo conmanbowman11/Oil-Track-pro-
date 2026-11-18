@@ -8,7 +8,14 @@ import {
   CustomerTabs, CustomerTypeBadge, CUSTOMER_TYPE_LABEL, FollowUpsWidget, FollowUpsPage,
   useFollowUpBadgeCount, useOverdueCustomerIds,
 } from '@/components/crm';
-import { CustomerFilterOrders } from '@/components/filters';
+import {
+  CustomerFilterOrders, FilterOrdersPage, FilterOrderDetail, SupplierListPage, MachineFilters,
+  useOrderTotals, useFilterBilling, buildFilterInvoicePdfBlob, filterInvoiceFileName,
+} from '@/components/filters';
+import { filterOrdersApi, contactsApi } from '@/lib/crmHooks';
+import { orderLabel } from '@/components/crm';
+import { isoDateOf, loadSaveAs } from '@/components/ui';
+import type { FilterOrder } from '@/types/database';
 import {
   useCompanySettings,
   useUpsertCompanySettings,
@@ -437,7 +444,61 @@ body.printing-oil-slips .app{display:none}
 .step.cancelled .dot{background:var(--rd);border-color:var(--rd)}
 .step .lbl{font-size:11px;font-weight:600;margin-top:4px}
 .step .when{font-size:10px;color:var(--tx3);font-family:'IBM Plex Mono',monospace;min-height:13px}
+.sort-sel{padding:5px 9px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;font-family:'Outfit',sans-serif;color:var(--tx);cursor:pointer;outline:none;max-width:100%}
+.sort-sel:hover,.sort-sel:focus{border-color:var(--ac)}
+.ch h3 > svg{display:inline-block;vertical-align:-2px;margin-right:5px}
 .rev-split{font-size:10.5px;color:var(--tx3);margin-top:2px;font-family:'IBM Plex Mono',monospace}
+
+
+/* ===== PHONE / SMALL TABLET (screen only — print layout is untouched) ===== */
+.menu-btn{display:none}
+.sb-bg{display:none}
+@media screen and (max-width:820px){
+  .app{height:100dvh}
+  .sb{position:fixed;top:0;left:0;bottom:0;z-index:150;width:250px;min-width:250px;transform:translateX(-100%);transition:transform .2s ease;box-shadow:none}
+  .sb.open{transform:none;box-shadow:4px 0 24px rgba(0,0,0,.18)}
+  .sb-bg{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:140}
+  .si{padding:12px 12px;font-size:14px}
+  .menu-btn{display:inline-flex}
+  .topbar{padding:10px 12px;gap:8px;position:sticky;top:0;z-index:20}
+  .topbar h2{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .area{padding:12px 10px 80px}
+  .card{padding:12px;overflow-x:auto}
+  .stats{grid-template-columns:repeat(2,1fr);gap:8px}
+  .st{padding:10px}
+  .st-v{font-size:18px}
+  .fr,.fr3{grid-template-columns:1fr}
+  .wi,.g3{grid-template-columns:repeat(2,1fr)}
+  .g5{grid-template-columns:repeat(3,1fr)}
+  .cost-edit-grid{grid-template-columns:1fr 1fr!important}
+  .wh{padding:12px}.ws{padding:12px}
+  .btn{padding:8px 12px;font-size:12.5px}
+  .bs{padding:7px 10px;font-size:12px}
+  .fld input,.fld select,.fld textarea,.srch,.ab input,.sort-sel,.num-in,.note-in{font-size:16px}
+  .num-in{width:80px}
+  .mbg{padding:0;align-items:stretch}
+  .mdl,.mdl.sm{max-width:none;max-height:none;height:100dvh;border-radius:0;border:none}
+  .toast{left:12px;right:12px;bottom:12px;text-align:center}
+  tbody td{padding:9px 8px}
+  thead th{padding:7px 8px}
+  .filterbar{padding:8px}
+  .filterbar .sep{display:none}
+  .line-main{min-width:0;flex-basis:100%}
+  .line-nums{width:100%;justify-content:flex-end}
+  .fu-row{align-items:flex-start}
+  .fu-actions{width:100%}
+  .hide-sm{display:none}
+  .area td.m,.area td .tag{white-space:nowrap}
+  .step{min-width:60px}
+  .step .lbl{font-size:10px}
+  .cust-hd{flex-wrap:wrap}
+  .crumbs{font-size:11.5px}
+  .oil-slips-print{padding:10px}
+  .oil-slips-actions{flex-wrap:wrap}
+}
+@media screen and (max-width:420px){
+  .g5{grid-template-columns:repeat(2,1fr)}
+}
 
 `;
 
@@ -790,15 +851,15 @@ function CopyTemplateForm({ unit_id, units, customers, templates, onSaveAsync, o
 // EDIT INVOICE NUMBER FORM (NEW)
 // =============================================
 function EditInvoiceNumberForm({
-  currentNumber, allWorkOrders, currentWorkOrderId, onSaveAsync, onClose,
+  currentNumber, allWorkOrders, currentWorkOrderId, onSaveAsync, onClose, otherUsedNumbers = [],
 }: {
-  currentNumber: number | null; allWorkOrders: WorkOrder[]; currentWorkOrderId: string;
+  currentNumber: number | null; allWorkOrders: WorkOrder[]; currentWorkOrderId: string; otherUsedNumbers?: number[];
   onSaveAsync: (newNumber: number) => Promise<void>; onClose: () => void;
 }) {
   const [num, setNum] = useState(currentNumber || 0);
   const [confirmed, setConfirmed] = useState(false);
 
-  const isDuplicate = allWorkOrders.some(w => w.invoice_number === num && w.work_order_id !== currentWorkOrderId);
+  const isDuplicate = allWorkOrders.some(w => w.invoice_number === num && w.work_order_id !== currentWorkOrderId) || otherUsedNumbers.includes(num);
   const requiresConfirmation = isDuplicate && !confirmed;
 
   return (
@@ -910,7 +971,8 @@ type ModalType =
   | { t: 'copyTemplate'; unit_id: string }
   | { t: 'editInvoiceNumber'; wo: WorkOrder }
   | { t: 'addInventory' }
-  | { t: 'confirmDelete'; what: string; danger?: boolean; onConfirm: () => Promise<void> };
+  | { t: 'confirmDelete'; what: string; danger?: boolean; onConfirm: () => Promise<void> }
+  | { t: 'confirmAction'; title: string; message: string; label: string; onConfirm: () => Promise<void> };
 
 export default function OilTrackApp({ user }: { user: User }) {
   const { data: company } = useCompanySettings();
@@ -968,6 +1030,10 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [custSearch, setCustSearch] = useState('');
   const [navOpen, setNavOpen] = useState(false);
   const followUpBadge = useFollowUpBadgeCount();
+  const { data: filterOrders = [] } = filterOrdersApi.useList();
+  const { data: allContacts = [] } = contactsApi.useList();
+  const { byOrder: foItemsByOrder, totals: foTotals } = useOrderTotals();
+  const applyFilterBilling = useFilterBilling((m, e) => showToast(m, e));
   const overdueCustIds = useOverdueCustomerIds();
   const [partsActive, setPartsActive] = useState<'active' | 'inactive' | 'all'>('active');
   // Inventory page search
@@ -983,9 +1049,14 @@ export default function OilTrackApp({ user }: { user: User }) {
 
   const showToast = (msg: string, err = false) => { setToast({ msg, err }); setTimeout(() => setToast(null), err ? 4000 : 2500); };
   // Generic "Are you sure?" used by the new Filter/CRM screens
-  const confirmAction = (what: string, onConfirm: () => Promise<void>) => setModal({ t: 'confirmDelete', what, onConfirm });
+  const confirmAction = (what: string, onConfirm: () => Promise<void>, opts?: { title: string; message: string; label: string }) =>
+    setModal(opts ? { t: 'confirmAction', ...opts, onConfirm } : { t: 'confirmDelete', what, onConfirm });
 
-  const nav = useCallback((p: string, id: string, lbl: string) => { setTrail(pr => [...pr, { p, id, lbl }]); setPg(p); }, []);
+  // Pages without an id (e.g. 'followups') are top-level: jump there instead of stacking breadcrumbs
+  const nav = useCallback((p: string, id: string, lbl: string) => {
+    if (!id) { setTrail([]); setPg(p); return; }
+    setTrail(pr => [...pr, { p, id, lbl }]); setPg(p);
+  }, []);
   const back = useCallback(() => {
     setTrail(pr => { const n = pr.slice(0, -1); setPg(n.length ? n[n.length - 1].p : 'dashboard'); return n; });
   }, []);
@@ -1232,9 +1303,9 @@ export default function OilTrackApp({ user }: { user: User }) {
    * Filenames: {unit}_{MMDDYYYY}.pdf, e.g. ITH-37_10152026.pdf
    * Collisions (same unit + same date) get a numeric suffix.
    */
-  async function batchExportInvoices(selectedWOs: WorkOrder[]): Promise<void> {
+  async function batchExportInvoices(selectedWOs: WorkOrder[], selectedFOs: FilterOrder[] = []): Promise<void> {
     const { default: JSZip } = await import('jszip');
-    const { saveAs } = await import('file-saver');
+    const saveAs = await loadSaveAs();
     const zip = new JSZip();
 
     const used: Record<string, number> = {};
@@ -1250,6 +1321,14 @@ export default function OilTrackApp({ user }: { user: User }) {
         used[name] = 0;
       }
       const blob = await buildInvoicePdfBlob(wo);
+      zip.file(name, blob);
+    }
+    for (const fo of selectedFOs) {
+      const c = getCustomer(fo.customer_id);
+      const contact = allContacts.find(x => x.contact_id === fo.contact_id) || allContacts.find(x => x.customer_id === fo.customer_id && x.is_primary);
+      const blob = await buildFilterInvoicePdfBlob({ order: fo, items: foItemsByOrder[fo.filter_order_id] || [], customer: c, contact, units, company });
+      let name = filterInvoiceFileName(fo, c);
+      if (used[name] != null) { used[name] += 1; name = name.replace(/\.pdf$/, `_${used[name] + 1}.pdf`); } else used[name] = 0;
       zip.file(name, blob);
     }
 
@@ -1403,13 +1482,22 @@ export default function OilTrackApp({ user }: { user: User }) {
         const y = yearOfServiceDate(w.service_date);
         if (y != null) years.add(y);
       });
+      filterOrders.forEach(o => {
+        const y = yearOfServiceDate(isoDateOf(o.delivered_at));
+        if (y != null && ['delivered', 'paid'].includes(o.status)) years.add(y);
+      });
       years.add(new Date().getFullYear());
       return Array.from(years).sort((a, b) => b - a);
     })();
 
-    const rev = completed
+    const serviceRev = completed
       .filter(w => yearOfServiceDate(w.service_date) === dashYear)
       .reduce((s, w) => s + (w.total_retail || 0), 0);
+    // Filter revenue: delivered or paid filter orders, by delivery date
+    const filterRev = filterOrders
+      .filter(o => ['delivered', 'paid'].includes(o.status) && yearOfServiceDate(isoDateOf(o.delivered_at)) === dashYear)
+      .reduce((s, o) => s + foTotals(o).total, 0);
+    const rev = serviceRev + filterRev;
 
     return (
       <>
@@ -1426,6 +1514,7 @@ export default function OilTrackApp({ user }: { user: User }) {
               </select>
             </div>
             <div className="st-v">${Math.round(rev).toLocaleString()}</div>
+            <div className="rev-split">Service ${Math.round(serviceRev).toLocaleString()} · Filters ${Math.round(filterRev).toLocaleString()}</div>
           </div>
         </div>
         {open.length > 0 && (
@@ -1662,7 +1751,7 @@ export default function OilTrackApp({ user }: { user: User }) {
             </div>
             <button className="btn bs" onClick={() => setModal({ t: 'editUnit', d: u })}>{IC(iEdit, 14)} Edit</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+          <div className="g3" style={{ gap: 8 }}>
             {(() => {
               const lastWO = workOrders.filter(w => w.unit_id === u.unit_id && w.status === 'complete' && w.completed_at)
                 .sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || ''))[0];
@@ -1683,6 +1772,7 @@ export default function OilTrackApp({ user }: { user: User }) {
             ))}
           </div>
         </div>
+        <MachineFilters unit={u} nav={nav} toast={showToast} confirm={confirmAction} />
         <div className="card">
           <div className="ch">
             <h3>Service Templates ({uTpls.length})</h3>
@@ -2295,42 +2385,65 @@ export default function OilTrackApp({ user }: { user: User }) {
       return !isNaN(t) && t >= cutoffMs;
     };
 
+    // ─── One row shape for work orders AND filter orders ─────────
+    type BillRow = {
+      kind: 'wo' | 'fo'; id: string; date: string; customer_id: string; label: string; service: string;
+      total: number; invoice_number: number | null; billed_at: string | null; wo?: WorkOrder; fo?: FilterOrder;
+    };
+    const woRow = (w: WorkOrder): BillRow => {
+      const u = getUnit(w.unit_id);
+      return { kind: 'wo', id: w.work_order_id, date: w.service_date, customer_id: w.customer_id, label: u?.unit_number || woPrimaryId(w, u), service: w.tier, total: w.total_retail || 0, invoice_number: w.invoice_number, billed_at: (w as any).billed_at, wo: w };
+    };
+    const foRow = (o: FilterOrder): BillRow => ({
+      kind: 'fo', id: o.filter_order_id, date: isoDateOf(o.delivered_at) || isoDateOf(o.created_at), customer_id: o.customer_id, label: orderLabel(o),
+      service: 'Filter Order', total: foTotals(o).total, invoice_number: o.invoice_number, billed_at: o.billed_at, fo: o,
+    });
+    const openRow = (r: BillRow) => r.kind === 'wo' ? nav('wo', r.id, r.label) : nav('forder', r.id, r.label);
+    const setBilled = (r: BillRow, on: boolean) => r.kind === 'wo' ? applyBilling(r.wo!, on) : applyFilterBilling(r.fo!, on);
+
     // ─── Sort comparator ──────────────────────────────────────────
-    const sortFn = (a: WorkOrder, b: WorkOrder): number => {
+    const sortFn = (a: BillRow, b: BillRow): number => {
       switch (billSort) {
-        case 'date-old':   return (a.service_date || '').localeCompare(b.service_date || '');
-        case 'price-high': return (b.total_retail || 0) - (a.total_retail || 0);
-        case 'price-low':  return (a.total_retail || 0) - (b.total_retail || 0);
+        case 'date-old':   return (a.date || '').localeCompare(b.date || '');
+        case 'price-high': return (b.total || 0) - (a.total || 0);
+        case 'price-low':  return (a.total || 0) - (b.total || 0);
         case 'inv-high':   return (b.invoice_number || 0) - (a.invoice_number || 0);
         case 'inv-low':    return (a.invoice_number || Number.MAX_SAFE_INTEGER) - (b.invoice_number || Number.MAX_SAFE_INTEGER);
         case 'cust':       return (getCustomer(a.customer_id)?.name || '').localeCompare(getCustomer(b.customer_id)?.name || '');
         case 'date-new':
-        default:           return (b.service_date || '').localeCompare(a.service_date || '');
+        default:           return (b.date || '').localeCompare(a.date || '');
       }
     };
 
     const completed = workOrders.filter(w => w.status === 'complete');
-    // Unbilled filters by service_date (older = more urgent); Billed filters by billed_at ("in last N days I billed")
-    const unbilled = completed.filter(w => !(w as any).billed && inRange(w.service_date)).sort(sortFn);
-    const billed   = completed.filter(w =>  (w as any).billed && inRange((w as any).billed_at)).sort(sortFn);
-    const unbilledTotal = unbilled.reduce((s, w) => s + (w.total_retail || 0), 0);
-    const billedTotal = billed.reduce((s, w) => s + (w.total_retail || 0), 0);
+    const deliveredFOs = filterOrders.filter(o => ['delivered', 'paid'].includes(o.status));
+    // Unbilled filters by service/delivery date (older = more urgent); Billed filters by billed_at ("in last N days I billed")
+    const unbilled = [
+      ...completed.filter(w => !(w as any).billed && inRange(w.service_date)).map(woRow),
+      ...deliveredFOs.filter(o => !o.billed && inRange(o.delivered_at)).map(foRow),
+    ].sort(sortFn);
+    const billed = [
+      ...completed.filter(w => (w as any).billed && inRange((w as any).billed_at)).map(woRow),
+      ...filterOrders.filter(o => o.billed && inRange(o.billed_at)).map(foRow),
+    ].sort(sortFn);
+    const unbilledTotal = unbilled.reduce((s, r) => s + (r.total || 0), 0);
+    const billedTotal = billed.reduce((s, r) => s + (r.total || 0), 0);
 
     const rangeLabel = (r: BillingRange) => ({
       '30': 'Last 30 days', '60': 'Last 60 days', '90': 'Last 90 days', 'year': 'Last year', 'all': 'All time',
     }[r]);
 
     const toggleSel = (id: string) => setSelectedForExport(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
-    const selectAllBilled = () => setSelectedForExport(billed.map(w => w.work_order_id));
+    const selectAllBilled = () => setSelectedForExport(billed.map(r => r.id));
     const clearSel = () => setSelectedForExport([]);
 
     const doBatchExport = async () => {
       if (selectedForExport.length === 0) return;
       setExporting(true);
       try {
-        const selectedWOs = billed.filter(w => selectedForExport.includes(w.work_order_id));
-        await batchExportInvoices(selectedWOs);
-        showToast(`Downloaded ${selectedWOs.length} invoice${selectedWOs.length === 1 ? '' : 's'}`);
+        const rows = billed.filter(r => selectedForExport.includes(r.id));
+        await batchExportInvoices(rows.filter(r => r.kind === 'wo').map(r => r.wo!), rows.filter(r => r.kind === 'fo').map(r => r.fo!));
+        showToast(`Downloaded ${rows.length} invoice${rows.length === 1 ? '' : 's'}`);
       } catch (err: any) {
         showToast(`Export failed: ${err?.message || 'Unknown error'}`, true);
       } finally {
@@ -2339,6 +2452,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     };
 
     const activeLabel = rangeLabel(billRange);
+    const typeTag = (r: BillRow) => r.kind === 'fo' ? <span className="tag tg">Filter Order</span> : <span className="tag tc">{r.service}</span>;
 
     return (
       <>
@@ -2372,9 +2486,9 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
 
         <div className="stats">
-          <div className="st"><div className="st-l">Unbilled WOs</div><div className="st-v" style={{ color: unbilled.length ? 'var(--am)' : 'var(--gn)' }}>{unbilled.length}</div></div>
+          <div className="st"><div className="st-l">Unbilled</div><div className="st-v" style={{ color: unbilled.length ? 'var(--am)' : 'var(--gn)' }}>{unbilled.length}</div></div>
           <div className="st"><div className="st-l">Outstanding</div><div className="st-v" style={{ color: 'var(--am)' }}>${Math.round(unbilledTotal).toLocaleString()}</div></div>
-          <div className="st"><div className="st-l">Billed WOs</div><div className="st-v" style={{ color: 'var(--bl)' }}>{billed.length}</div></div>
+          <div className="st"><div className="st-l">Billed</div><div className="st-v" style={{ color: 'var(--bl)' }}>{billed.length}</div></div>
           <div className="st"><div className="st-l">Billed Total</div><div className="st-v">${Math.round(billedTotal).toLocaleString()}</div></div>
         </div>
 
@@ -2385,25 +2499,24 @@ export default function OilTrackApp({ user }: { user: User }) {
             </h3>
           </div>
           {unbilled.length === 0 ? <div className="empty"><p>All caught up for this period! Nothing waiting to be billed.</p></div> : (
+            <div className="tw">
             <table>
-              <thead><tr><th>Unit</th><th>Date</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
+              <thead><tr><th>Unit / Order</th><th>Date</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
               <tbody>
-                {unbilled.map(w => {
-                  const u = getUnit(w.unit_id);
-                  return (
-                    <tr key={w.work_order_id}>
-                      <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>{u?.unit_number || '—'}</td>
-                      <td className="m">{w.service_date}</td>
-                      <td>{getCustomer(w.customer_id)?.name}</td>
-                      <td><span className="tag tc">{w.tier}</span></td>
-                      <td className="m" style={{ fontWeight: 600 }}>{formatMoney(w.total_retail)}</td>
-                      <td className="m" style={{ color: 'var(--tx3)', fontStyle: 'italic' }}>— unbilled</td>
-                      <td><button className="btn bs bp" onClick={() => applyBilling(w, true)}>{IC(iChk, 13)} Billed</button></td>
-                    </tr>
-                  );
-                })}
+                {unbilled.map(r => (
+                  <tr key={r.id}>
+                    <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => openRow(r)}>{r.label}</td>
+                    <td className="m">{r.date}</td>
+                    <td>{getCustomer(r.customer_id)?.name}</td>
+                    <td>{typeTag(r)}</td>
+                    <td className="m" style={{ fontWeight: 600 }}>{formatMoney(r.total)}</td>
+                    <td className="m" style={{ color: 'var(--tx3)', fontStyle: 'italic' }}>— unbilled</td>
+                    <td><button className="btn bs bp" onClick={() => setBilled(r, true)}>{IC(iChk, 13)} Billed</button></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -2420,32 +2533,39 @@ export default function OilTrackApp({ user }: { user: User }) {
             )}
           </div>
           {billed.length === 0 ? <div className="empty"><p>Nothing billed in this period</p></div> : (
+            <div className="tw">
             <table>
-              <thead><tr><th style={{ width: 28 }}></th><th>Unit</th><th>Billed</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
+              <thead><tr><th style={{ width: 28 }}></th><th>Unit / Order</th><th>Billed</th><th>Customer</th><th>Service</th><th>Total</th><th>Invoice #</th><th></th></tr></thead>
               <tbody>
-                {billed.map(w => {
-                  const u = getUnit(w.unit_id);
-                  const sel = selectedForExport.includes(w.work_order_id);
+                {billed.map(r => {
+                  const sel = selectedForExport.includes(r.id);
                   return (
-                    <tr key={w.work_order_id} style={{ background: sel ? 'var(--ac3)' : undefined }}>
-                      <td onClick={() => toggleSel(w.work_order_id)} style={{ cursor: 'pointer' }}><input type="checkbox" className="batch-cb" checked={sel} readOnly style={{ pointerEvents: 'none' }} /></td>
-                      <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => nav('wo', w.work_order_id, u?.unit_number || woPrimaryId(w, u))}>{u?.unit_number || '—'}</td>
-                      <td className="m">{(w as any).billed_at ? new Date((w as any).billed_at).toLocaleDateString() : '—'}</td>
-                      <td>{getCustomer(w.customer_id)?.name}</td>
-                      <td><span className="tag tc">{w.tier}</span></td>
-                      <td className="m">{formatMoney(w.total_retail)}</td>
+                    <tr key={r.id} style={{ background: sel ? 'var(--ac3)' : undefined }}>
+                      <td onClick={() => toggleSel(r.id)} style={{ cursor: 'pointer' }}><input type="checkbox" className="batch-cb" checked={sel} readOnly style={{ pointerEvents: 'none' }} aria-label={`Select ${r.label}`} /></td>
+                      <td style={{ fontWeight: 700, color: 'var(--ac)', cursor: 'pointer' }} onClick={() => openRow(r)}>{r.label}</td>
+                      <td className="m">{r.billed_at ? new Date(r.billed_at).toLocaleDateString() : '—'}</td>
+                      <td>{getCustomer(r.customer_id)?.name}</td>
+                      <td>{typeTag(r)}</td>
+                      <td className="m">{formatMoney(r.total)}</td>
                       <td>
-                        <span className="inv-cell m" onClick={() => setModal({ t: 'editInvoiceNumber', wo: w })} title="Click to edit invoice #">
-                          {w.invoice_number ? <strong>{w.invoice_number}</strong> : <em className="inv-missing">missing</em>}
-                          <span className="pencil">✎</span>
-                        </span>
+                        {r.kind === 'wo' ? (
+                          <span className="inv-cell m" onClick={() => setModal({ t: 'editInvoiceNumber', wo: r.wo! })} title="Click to edit invoice #">
+                            {r.invoice_number ? <strong>{r.invoice_number}</strong> : <em className="inv-missing">missing</em>}
+                            <span className="pencil">✎</span>
+                          </span>
+                        ) : (
+                          <span className="inv-cell m" onClick={() => openRow(r)} title="Open the order to edit its invoice #">
+                            {r.invoice_number ? <strong>{r.invoice_number}</strong> : <em className="inv-missing">missing</em>}
+                          </span>
+                        )}
                       </td>
-                      <td><button className="btn bs bg" onClick={() => applyBilling(w, false)}>Undo</button></td>
+                      <td><button className="btn bs bg" onClick={() => setBilled(r, false)}>Undo</button></td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </>
@@ -2744,12 +2864,23 @@ export default function OilTrackApp({ user }: { user: User }) {
       );
     }
 
+    if (modal.t === 'confirmAction') {
+      return (
+        <ModalShell title={modal.title} onClose={() => setModal(null)}
+          onSave={async () => { await modal.onConfirm(); setModal(null); }}
+          saveLabel={modal.label} danger>
+          <p style={{ fontSize: 13 }}>{modal.message}</p>
+        </ModalShell>
+      );
+    }
+
     if (modal.t === 'editInvoiceNumber') {
       return (
         <EditInvoiceNumberForm
           currentNumber={modal.wo.invoice_number}
           allWorkOrders={workOrders}
           currentWorkOrderId={modal.wo.work_order_id}
+          otherUsedNumbers={filterOrders.map(o => o.invoice_number).filter((n): n is number => n != null)}
           onClose={() => setModal(null)}
           onSaveAsync={async (newNum) => {
             await updateWorkOrder.mutateAsync({ work_order_id: modal.wo.work_order_id, updates: { invoice_number: newNum } });
@@ -2877,27 +3008,30 @@ export default function OilTrackApp({ user }: { user: User }) {
     { id: 'dashboard', l: 'Dashboard', ic: iHome },
     { id: 'followups', l: 'Follow-ups', ic: ICONS.bell, ct: followUpBadge || undefined, alert: followUpBadge > 0 },
     { id: 'customers', l: 'Customers', ic: iUsers, ct: customers.length },
+    { id: 'filterorders', l: 'Filter Orders', ic: ICONS.filter, ct: filterOrders.filter(o => o.status === 'requested').length || undefined },
+    { id: 'supplierlist', l: 'Supplier List', ic: ICONS.list },
     { id: 'parts', l: 'Parts & Filters', ic: iBox, ct: parts.length },
     { id: 'inventory', l: 'Inventory', ic: iInv, ct: inventory.length || undefined },
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
-    { id: 'billing', l: 'Billing', ic: iBill, ct: workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length || undefined },
+    { id: 'billing', l: 'Billing', ic: iBill, ct: (workOrders.filter(w => w.status === 'complete' && !(w as any).billed).length + filterOrders.filter(o => ['delivered', 'paid'].includes(o.status) && !o.billed).length) || undefined },
     { id: 'oilslips', l: 'Oil Slips', ic: iDrop, ct: workOrders.filter(w => needsOilSlip(w) && !(w as any).oil_slip_printed).length || undefined },
     { id: 'history', l: 'Service History', ic: iHist },
     { id: 'ai', l: 'AI Assistant', ic: iChat },
     { id: 'settings', l: 'Settings', ic: iGear },
   ];
 
-  const active = ['cust', 'unit'].includes(pg) ? 'customers' : pg === 'wo' ? 'workorders' : pg;
+  const active = ['cust', 'unit'].includes(pg) ? 'customers' : pg === 'wo' ? 'workorders' : pg === 'forder' ? 'filterorders' : pg;
   const title =
     pg === 'cust' ? trail[trail.length - 1]?.lbl || 'Customer' :
     pg === 'unit' ? trail[trail.length - 1]?.lbl || 'Unit' :
     pg === 'wo' ? trail[trail.length - 1]?.lbl || 'Work Order' :
+    pg === 'forder' ? `Filter Order ${trail[trail.length - 1]?.lbl || ''}` :
     menu.find(m => m.id === pg)?.l || 'Dashboard';
 
   const crumbs = trail.length > 0 && (
     <div className="crumbs">
-      <span onClick={() => { setTrail([]); setPg(active); }}>{active === 'workorders' ? 'Work Orders' : 'Customers'}</span>
+      <span onClick={() => { setTrail([]); setPg(active); }}>{menu.find(m => m.id === active)?.l || 'Home'}</span>
       {trail.map((n, i) => (
         <span key={i} style={{ display: 'contents' }}>
           <span className="sep">/</span>
@@ -2913,17 +3047,21 @@ export default function OilTrackApp({ user }: { user: User }) {
     parts: renderParts, engines: renderEngines, settings: renderSettings, ai: renderAi,
     billing: renderBilling, oilslips: renderOilSlipsPage, inventory: renderInventory,
     followups: () => <FollowUpsPage nav={nav} toast={showToast} />,
+    filterorders: () => <FilterOrdersPage nav={nav} toast={showToast} />,
+    forder: () => <FilterOrderDetail key={curId || ''} orderId={curId || ''} nav={nav} back={back} toast={showToast} confirm={confirmAction} />,
+    supplierlist: () => <SupplierListPage nav={nav} toast={showToast} />,
   };
 
   return (
     <>
       <style>{CSS}</style>
       <div className="app">
-        <div className="sb no-print">
+        {navOpen && <div className="sb-bg no-print" onClick={() => setNavOpen(false)} />}
+        <div className={`sb no-print${navOpen ? ' open' : ''}`}>
           <div className="sb-hd"><h1>OilTrack Pro</h1><p>Complete Fleet Solutions</p></div>
           <nav className="sb-nav">
             {menu.map(m => (
-              <div key={m.id} className={`si${active === m.id ? ' on' : ''}`} onClick={() => { setPg(m.id); setTrail([]); }}>
+              <div key={m.id} className={`si${active === m.id ? ' on' : ''}`} onClick={() => { setPg(m.id); setTrail([]); setNavOpen(false); }}>
                 {IC(m.ic)}{m.l}{m.ct != null && <span className={`ct${(m as any).alert ? ' alert' : ''}`}>{m.ct}</span>}
               </div>
             ))}
@@ -2935,7 +3073,8 @@ export default function OilTrackApp({ user }: { user: User }) {
         </div>
         <div className="mn">
           <div className="topbar no-print">
-            {trail.length > 0 && <button className="btn bs bg" onClick={back}>{IC(iBack, 16)}</button>}
+            <button className="btn bs bg menu-btn" aria-label="Open menu" onClick={() => setNavOpen(true)}>{IC('M3 12h18 M3 6h18 M3 18h18', 18)}</button>
+            {trail.length > 0 && <button className="btn bs bg" aria-label="Back" onClick={back}>{IC(iBack, 16)}</button>}
             <h2>{title}</h2>
           </div>
           <div className="area">{crumbs}{(pages[pg] || renderDashboard)()}</div>
