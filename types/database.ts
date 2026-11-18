@@ -17,6 +17,14 @@ export interface CompanySettings {
   tax_rate_percent: number;
   invoice_footer_notes: string;
   next_invoice_number: number;
+  // Filter sales (migration 001)
+  default_filter_markup_pct: number;
+  filter_tax_rate_percent: number;
+  supplier_name: string;
+  supplier_contact_name: string;
+  supplier_phone: string;
+  supplier_email: string;
+  supplier_account_number: string;
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +45,9 @@ export interface PartPriceOverride {
   cost: number;
 }
 
+export type CustomerType = 'service' | 'filter_only' | 'both';
+export type CustomerStatus = 'active' | 'inactive';
+
 export interface Customer {
   customer_id: string;
   user_id: string;
@@ -48,6 +59,8 @@ export interface Customer {
   notes: string;
   default_fees: CustomerDefaultFees;
   part_price_overrides: Record<string, PartPriceOverride>;
+  customer_type: CustomerType;
+  status: CustomerStatus;
   created_at: string;
   updated_at: string;
 }
@@ -75,6 +88,9 @@ export interface Part {
   cost: number;
   supplier: string;
   notes: string;
+  // Filter sales: blank markup = use default_filter_markup_pct from settings
+  markup_pct: number | null;
+  active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -239,4 +255,102 @@ export interface InventoryItem {
   notes: string;
   created_at: string;
   updated_at: string;
+}
+
+// =============================================
+// Filter Sales + Customer Tracking (migration 001)
+// =============================================
+
+export interface CustomerContact {
+  contact_id: string;
+  user_id: string;
+  customer_id: string;
+  name: string;
+  role: string;
+  phone: string;
+  email: string;
+  is_primary: boolean;
+  notes: string;
+  created_at: string;
+}
+
+export type ActivityType = 'note' | 'call' | 'visit' | 'text' | 'email';
+
+export interface CustomerActivity {
+  activity_id: string;
+  user_id: string;
+  customer_id: string;
+  contact_id: string | null;
+  type: ActivityType;
+  body: string;
+  occurred_at: string;
+  created_at: string;
+}
+
+export type FollowUpStatus = 'open' | 'done';
+
+export interface FollowUp {
+  follow_up_id: string;
+  user_id: string;
+  customer_id: string;
+  contact_id: string | null;
+  title: string;
+  notes: string;
+  due_date: string; // YYYY-MM-DD
+  status: FollowUpStatus;
+  completed_at: string | null;
+  related_filter_order_id: string | null;
+  created_at: string;
+}
+
+export type FilterOrderStatus = 'requested' | 'ordered' | 'received' | 'delivered' | 'paid' | 'cancelled';
+
+export interface FilterOrder {
+  filter_order_id: string;
+  user_id: string;
+  order_number: number;
+  customer_id: string;
+  contact_id: string | null;
+  status: FilterOrderStatus;
+  requested_at: string | null;
+  ordered_at: string | null;
+  received_at: string | null;
+  delivered_at: string | null;
+  paid_at: string | null;
+  cancelled_at: string | null;
+  supplier_ref: string;
+  notes: string;
+  tax_rate_percent: number;
+  invoice_number: number | null;
+  billed: boolean;
+  billed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FilterOrderItem {
+  item_id: string;
+  user_id: string;
+  filter_order_id: string;
+  part_id: string | null;
+  part_number: string;
+  description: string;
+  brand: string;
+  unit_id: string | null;
+  quantity: number;
+  unit_cost: number;
+  unit_price: number;
+  price_overridden: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface EquipmentFilter {
+  equipment_filter_id: string;
+  user_id: string;
+  unit_id: string;
+  part_id: string;
+  quantity_per_change: number;
+  notes: string;
+  created_at: string;
 }

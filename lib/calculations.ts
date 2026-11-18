@@ -96,3 +96,42 @@ export function formatMoney(n: number): string {
 export function formatInvoiceNumber(n: number): string {
   return `INV-${n}`;
 }
+
+// =============================================
+// FILTER SALES PRICING
+// =============================================
+
+// Markup used for a part: its own markup if set, otherwise the global default.
+export function effectiveMarkupPct(partMarkup: number | null | undefined, defaultMarkup: number): number {
+  return partMarkup != null && !isNaN(Number(partMarkup)) ? Number(partMarkup) : Number(defaultMarkup) || 0;
+}
+
+// sell price = supplier cost × (1 + markup / 100), rounded to the cent
+export function filterSellPrice(cost: number, markupPct: number): number {
+  return round2((Number(cost) || 0) * (1 + (Number(markupPct) || 0) / 100));
+}
+
+export interface FilterOrderTotals {
+  item_count: number;
+  subtotal: number;
+  tax_amount: number;
+  total: number;
+  total_cost: number;
+  profit: number;
+}
+
+// Tax applies to every filter line (filters are parts) at the order's own tax rate.
+export function calculateFilterOrderTotals(
+  items: { quantity: number; unit_price: number; unit_cost: number }[],
+  tax_rate_percent: number
+): FilterOrderTotals {
+  const subtotal = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0), 0));
+  const total_cost = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_cost) || 0), 0));
+  const tax_amount = round2(subtotal * ((Number(tax_rate_percent) || 0) / 100));
+  const total = round2(subtotal + tax_amount);
+  return {
+    item_count: items.reduce((s, i) => s + (Number(i.quantity) || 0), 0),
+    subtotal, tax_amount, total, total_cost,
+    profit: round2(subtotal - total_cost),
+  };
+}
