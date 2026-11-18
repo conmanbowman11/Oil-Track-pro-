@@ -3,6 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase';
+import { ModalShell, LocalNumberInput, NullableNumberInput } from '@/components/ui';
 import {
   useCompanySettings,
   useUpsertCompanySettings,
@@ -39,6 +40,8 @@ import {
   round2,
   formatMoney,
   formatInvoiceNumber,
+  effectiveMarkupPct,
+  filterSellPrice,
 } from '@/lib/calculations';
 import type {
   Customer,
@@ -53,7 +56,7 @@ import type {
 } from '@/types/database';
 
 const SUPPLIERS = ['CAT', 'John Deere', 'Case IH', 'AGCO', 'Baldwin', 'Donaldson', 'Fleetguard/Cummins', 'Other'];
-const CATEGORIES = ['Fuel System', 'Air Filter', 'Oil Filter', 'Hydraulic', 'Transmission', 'DEF', 'Coolant', 'Lab/Testing', 'Other'];
+const CATEGORIES = ['Fuel System', 'Fuel/Water Separator', 'Air Filter', 'Air Filter - Secondary', 'Oil Filter', 'Hydraulic', 'Transmission', 'Cabin Filter', 'DEF', 'Coolant', 'Lab/Testing', 'Other'];
 
 type BillingRange = '30' | '60' | '90' | 'year' | 'all';
 type BillingSort = 'date-new' | 'date-old' | 'price-high' | 'price-low' | 'inv-high' | 'inv-low' | 'cust';
@@ -364,88 +367,6 @@ body.printing-oil-slips .app{display:none}
 `;
 
 // =============================================
-// MODAL SHELL
-// =============================================
-function ModalShell({
-  title, children, onClose, onSave, saveLabel = 'Save', saveDisabled = false, size = 'sm', danger = false,
-}: {
-  title: string; children: React.ReactNode; onClose: () => void;
-  onSave: () => Promise<void> | void; saveLabel?: string; saveDisabled?: boolean; size?: 'sm' | 'lg'; danger?: boolean;
-}) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    if (saving) return;
-    setSaving(true); setError(null);
-    try { await onSave(); }
-    catch (err: any) { setError(err?.message || 'Something went wrong. Please try again.'); }
-    finally { setSaving(false); }
-  };
-
-  return (
-    <div className="mbg">
-      <div className={`mdl ${size === 'sm' ? 'sm' : ''}`}>
-        <div className="mh">
-          <h3>{title}</h3>
-          <button className="btn bs bg" onClick={onClose} disabled={saving}>✕</button>
-        </div>
-        <div className="mb2">{children}</div>
-        {error && <div className="merr">{error}</div>}
-        <div className="mf">
-          <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className={`btn ${danger ? 'bd2btn' : 'bp'}`} onClick={handleSave} disabled={saving || saveDisabled}>
-            {saving ? 'Saving…' : saveLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// =============================================
-// LOCAL NUMBER INPUT
-// Fixes typing lag by committing on blur/Enter instead of every keystroke.
-// Prevents the whole work order from re-rendering + hitting Supabase per keystroke.
-// =============================================
-function LocalNumberInput({
-  value, onCommit, style, placeholder, step = '1',
-}: {
-  value: number;
-  onCommit: (v: number) => void;
-  style?: React.CSSProperties;
-  placeholder?: string;
-  step?: string;
-}) {
-  const [local, setLocal] = useState<string>(value ? String(value) : '');
-  const focusedRef = useRef(false);
-
-  useEffect(() => {
-    if (!focusedRef.current) setLocal(value ? String(value) : '');
-  }, [value]);
-
-  const commit = () => {
-    focusedRef.current = false;
-    const num = Number(local) || 0;
-    if (num !== value) onCommit(num);
-  };
-
-  return (
-    <input
-      type="number"
-      step={step}
-      value={local}
-      placeholder={placeholder}
-      onChange={e => setLocal(e.target.value)}
-      onFocus={() => { focusedRef.current = true; }}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
-      style={style}
-    />
-  );
-}
-
-// =============================================
 // CUSTOMER FORM
 // =============================================
 function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Customer> | null; onSaveAsync: (c: Partial<Customer>) => Promise<void>; onClose: () => void }) {
@@ -571,8 +492,10 @@ function EngineForm({ initial, onSaveAsync, onClose }: { initial: Partial<Engine
 // =============================================
 // PART FORM
 // =============================================
-function PartForm({ initial, onSaveAsync, onClose }: { initial: Partial<Part> | null; onSaveAsync: (p: Partial<Part>) => Promise<void>; onClose: () => void }) {
-  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '' });
+function PartForm({ initial, defaultMarkup = 30, onSaveAsync, onClose }: { initial: Partial<Part> | null; defaultMarkup?: number; onSaveAsync: (p: Partial<Part>) => Promise<void>; onClose: () => void }) {
+  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '', markup_pct: null, active: true });
+  const usedMarkup = effectiveMarkupPct(form.markup_pct, defaultMarkup);
+  const sellPrice = filterSellPrice(form.cost || 0, usedMarkup);
   const margin = (form.retail_price || 0) - (form.cost || 0);
   const marginPct = form.cost && form.cost > 0 ? (margin / form.cost) * 100 : 0;
   return (
@@ -603,7 +526,26 @@ function PartForm({ initial, onSaveAsync, onClose }: { initial: Partial<Part> | 
         <div className="fld"><label>Retail Price</label><input type="number" step="0.01" value={form.retail_price || 0} onChange={e => setForm(p => ({ ...p, retail_price: Number(e.target.value) || 0 }))} /></div>
       </div>
       <div style={{ padding: '8px 12px', background: 'var(--bg)', borderRadius: 'var(--r)', fontSize: 12, color: 'var(--tx2)', marginBottom: 12 }}>
-        Margin: <strong>{formatMoney(round2(margin))}</strong> ({marginPct.toFixed(1)}%)
+        Service margin: <strong>{formatMoney(round2(margin))}</strong> ({marginPct.toFixed(1)}%)
+      </div>
+      <div className="section-hdr">Filter Sales Price</div>
+      <div className="fr">
+        <div className="fld"><label>Markup % (blank = default {defaultMarkup}%)</label>
+          <input type="number" step="0.1" inputMode="decimal" value={form.markup_pct == null ? '' : form.markup_pct} placeholder={`${defaultMarkup}`}
+            onChange={e => setForm(p => ({ ...p, markup_pct: e.target.value === '' ? null : Number(e.target.value) }))} />
+        </div>
+        <div className="fld"><label>Filter Sell Price</label>
+          <div style={{ padding: '7px 11px', background: 'var(--gn2)', color: 'var(--gn)', borderRadius: 'var(--r)', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace" }}>
+            {formatMoney(sellPrice)} <span style={{ fontWeight: 400, fontSize: 11 }}>({usedMarkup}% markup)</span>
+          </div>
+        </div>
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: -6, marginBottom: 12 }}>Retail Price is used on oil change work orders. Filter Sell Price (cost + markup) is used on filter orders.</p>
+      <div className="fld">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', textTransform: 'none', letterSpacing: 0, color: 'var(--tx)' }}>
+          <input type="checkbox" checked={form.active !== false} onChange={e => setForm(p => ({ ...p, active: e.target.checked }))} style={{ accentColor: 'var(--ac)', width: 'auto' }} />
+          Active (uncheck to hide from new filter orders)
+        </label>
       </div>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
     </ModalShell>
@@ -837,6 +779,27 @@ function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | n
         <div className="fld"><label>Invoice Footer Notes</label><textarea value={form.invoice_footer_notes || ''} onChange={e => setForm(p => ({ ...p, invoice_footer_notes: e.target.value }))} /></div>
         <button className="btn bp" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</button>
       </div>
+      <div className="card">
+        <div className="ch"><h3>Filter Sales</h3></div>
+        <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 14 }}>Pricing and tax for filter orders, plus your filter supplier&apos;s info.</p>
+        <div className="fr">
+          <div className="fld"><label>Default Filter Markup (%)</label><input type="number" step="0.1" inputMode="decimal" value={form.default_filter_markup_pct ?? 30} onChange={e => setForm(p => ({ ...p, default_filter_markup_pct: Number(e.target.value) || 0 }))} /></div>
+          <div className="fld"><label>Filter Order Tax Rate (%)</label><input type="number" step="0.01" inputMode="decimal" value={form.filter_tax_rate_percent ?? 2.5} onChange={e => setForm(p => ({ ...p, filter_tax_rate_percent: Number(e.target.value) || 0 }))} />
+            <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Starting rate for new filter orders. You can change it on each order.</p>
+          </div>
+        </div>
+        <div className="section-hdr">Supplier</div>
+        <div className="fr">
+          <div className="fld"><label>Supplier Name</label><input value={form.supplier_name || ''} onChange={e => setForm(p => ({ ...p, supplier_name: e.target.value }))} /></div>
+          <div className="fld"><label>Contact Name</label><input value={form.supplier_contact_name || ''} onChange={e => setForm(p => ({ ...p, supplier_contact_name: e.target.value }))} /></div>
+        </div>
+        <div className="fr">
+          <div className="fld"><label>Phone</label><input type="tel" value={form.supplier_phone || ''} onChange={e => setForm(p => ({ ...p, supplier_phone: e.target.value }))} /></div>
+          <div className="fld"><label>Email</label><input type="email" value={form.supplier_email || ''} onChange={e => setForm(p => ({ ...p, supplier_email: e.target.value }))} /></div>
+        </div>
+        <div className="fld"><label>Account Number</label><input value={form.supplier_account_number || ''} onChange={e => setForm(p => ({ ...p, supplier_account_number: e.target.value }))} /></div>
+        <button className="btn bp" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</button>
+      </div>
       {toast && <div className={`toast${toast.err ? ' err' : ''}`}>{toast.msg}</div>}
     </>
   );
@@ -906,6 +869,8 @@ export default function OilTrackApp({ user }: { user: User }) {
   const [exporting, setExporting] = useState(false);
   // Parts catalog search
   const [partsSearch, setPartsSearch] = useState('');
+  const [partsCat, setPartsCat] = useState('all');
+  const [partsActive, setPartsActive] = useState<'active' | 'inactive' | 'all'>('active');
   // Inventory page search
   const [invSearch, setInvSearch] = useState('');
   // Inventory add-item picker search
@@ -2459,55 +2424,89 @@ export default function OilTrackApp({ user }: { user: User }) {
 
   const renderParts = () => {
     const q = partsSearch.trim().toLowerCase();
-    const filtered = q ? parts.filter(p =>
-      (p.part_number || '').toLowerCase().includes(q) ||
-      (p.description || '').toLowerCase().includes(q) ||
-      (p.manufacturer || '').toLowerCase().includes(q) ||
-      (p.supplier || '').toLowerCase().includes(q) ||
-      (p.category || '').toLowerCase().includes(q)
-    ) : parts;
+    const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+    const filtered = parts.filter(p =>
+      (partsActive === 'all' || (partsActive === 'active' ? p.active !== false : p.active === false)) &&
+      (partsCat === 'all' || p.category === partsCat) &&
+      (!q ||
+        (p.part_number || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q) ||
+        (p.manufacturer || '').toLowerCase().includes(q) ||
+        (p.supplier || '').toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q))
+    );
+    const cats = Array.from(new Set([...CATEGORIES, ...parts.map(p => p.category).filter(Boolean)]));
+    const commitPart = async (p: Part, updates: Partial<Part>) => {
+      try { await updatePart.mutateAsync({ part_id: p.part_id, updates }); }
+      catch (err: any) { showToast(`Failed to update: ${err?.message || 'Unknown error'}`, true); }
+    };
+    const cellInput = { padding: '3px 6px', fontSize: 12, fontFamily: "'IBM Plex Mono',monospace", width: 76, textAlign: 'right' as const, background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 4, color: 'var(--tx)', outline: 'none' };
 
     return (
       <div className="card">
         <div className="ch">
-          <h3>Parts Catalog ({q ? `${filtered.length} of ${parts.length}` : parts.length})</h3>
+          <h3>Parts &amp; Filters ({filtered.length === parts.length ? parts.length : `${filtered.length} of ${parts.length}`})</h3>
           <button className="btn bs bp" onClick={() => setModal({ t: 'addPart' })}>{IC(iPlus, 15)} Add Part</button>
         </div>
+        <p style={{ fontSize: 11.5, color: 'var(--tx2)', marginBottom: 10 }}>
+          One catalog for oil changes and filter sales. <strong>Retail</strong> is used on work orders. <strong>Sell</strong> = cost + markup (default {defMarkup}%) and is used on filter orders. Edit cost and markup right in the table.
+        </p>
         {parts.length > 0 && (
-          <div style={{ position: 'relative', marginBottom: 10 }}>
-            <input
-              type="text"
-              value={partsSearch}
-              onChange={ev => setPartsSearch(ev.target.value)}
-              placeholder="Search by part #, description, manufacturer, supplier, or category..."
-              style={{ width: '100%', padding: '8px 32px 8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', color: 'var(--tx)' }}
-            />
-            {partsSearch && (
-              <button onClick={() => setPartsSearch('')} title="Clear search" style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}>✕</button>
-            )}
-          </div>
+          <>
+            <div style={{ position: 'relative', marginBottom: 8 }}>
+              <input
+                type="text"
+                value={partsSearch}
+                onChange={ev => setPartsSearch(ev.target.value)}
+                placeholder="Search by part #, description, manufacturer, supplier, or category..."
+                style={{ width: '100%', padding: '8px 32px 8px 12px', background: 'var(--bg)', border: '1px solid var(--bd)', borderRadius: 'var(--r)', fontSize: 13, fontFamily: "'Outfit',sans-serif", outline: 'none', color: 'var(--tx)' }}
+              />
+              {partsSearch && (
+                <button onClick={() => setPartsSearch('')} title="Clear search" style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}>✕</button>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              <select className="sort-sel" value={partsCat} onChange={e => setPartsCat(e.target.value)} aria-label="Filter by category">
+                <option value="all">All categories</option>
+                {cats.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select className="sort-sel" value={partsActive} onChange={e => setPartsActive(e.target.value as any)} aria-label="Filter by active">
+                <option value="active">Active only</option>
+                <option value="inactive">Inactive only</option>
+                <option value="all">Active + inactive</option>
+              </select>
+            </div>
+          </>
         )}
         {parts.length === 0 ? (
-          <div className="empty"><p>No parts yet. Add parts to use them in service templates.</p></div>
+          <div className="empty"><p>No parts yet. Add parts to use them in service templates and filter orders.</p></div>
         ) : filtered.length === 0 ? (
-          <div className="empty"><p>No parts match "{partsSearch}"</p></div>
+          <div className="empty"><p>No parts match these filters</p></div>
         ) : (
+          <div className="tw">
           <table>
-            <thead><tr><th>Part #</th><th>Description</th><th>Mfr</th><th>Category</th><th>Cost</th><th>Retail</th><th></th></tr></thead>
+            <thead><tr><th>Part #</th><th>Description</th><th>Mfr</th><th>Category</th><th>Cost</th><th>Markup %</th><th>Sell</th><th>Retail</th><th></th></tr></thead>
             <tbody>
               {filtered.map(p => (
-                <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })}>
-                  <td className="m" style={{ fontWeight: 700 }}>{p.part_number}</td>
+                <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })} style={{ opacity: p.active === false ? 0.55 : 1 }}>
+                  <td className="m" style={{ fontWeight: 700 }}>{p.part_number}{p.active === false && <span className="tag" style={{ marginLeft: 6, background: 'var(--bg2)', color: 'var(--tx3)' }}>inactive</span>}</td>
                   <td>{p.description}</td>
                   <td><span className="tag tb">{p.manufacturer}</span></td>
                   <td style={{ fontSize: 11, color: 'var(--tx2)' }}>{p.category}</td>
-                  <td className="m">{formatMoney(p.cost)}</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <LocalNumberInput value={Number(p.cost) || 0} step="0.01" ariaLabel={`Cost for ${p.part_number}`} onCommit={v => commitPart(p, { cost: v })} style={cellInput} />
+                  </td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <NullableNumberInput value={p.markup_pct ?? null} step="0.1" placeholder={`${defMarkup}`} ariaLabel={`Markup for ${p.part_number}`} onCommit={v => commitPart(p, { markup_pct: v })} style={{ ...cellInput, width: 60 }} />
+                  </td>
+                  <td className="m" style={{ fontWeight: 600, color: 'var(--gn)' }}>{formatMoney(filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup)))}</td>
                   <td className="m" style={{ fontWeight: 600 }}>{formatMoney(p.retail_price)}</td>
-                  <td><button className="btn bs">{IC(iEdit, 13)}</button></td>
+                  <td><button className="btn bs" aria-label="Edit part">{IC(iEdit, 13)}</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     );
@@ -2617,7 +2616,7 @@ export default function OilTrackApp({ user }: { user: User }) {
       }} />);
     }
     if (modal.t === 'addPart' || modal.t === 'editPart') {
-      return (<PartForm initial={modal.d || null} onClose={() => setModal(null)} onSaveAsync={async (form) => {
+      return (<PartForm initial={modal.d || null} defaultMarkup={Number(company?.default_filter_markup_pct ?? 30)} onClose={() => setModal(null)} onSaveAsync={async (form) => {
         if (modal.t === 'addPart') { await createPart.mutateAsync(form); showToast('Part added'); }
         else { await updatePart.mutateAsync({ part_id: (modal.d as Part).part_id, updates: form }); showToast('Part updated'); }
         setModal(null);
@@ -2706,7 +2705,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const menu = [
     { id: 'dashboard', l: 'Dashboard', ic: iHome },
     { id: 'customers', l: 'Customers', ic: iUsers, ct: customers.length },
-    { id: 'parts', l: 'Parts Catalog', ic: iBox, ct: parts.length },
+    { id: 'parts', l: 'Parts & Filters', ic: iBox, ct: parts.length },
     { id: 'inventory', l: 'Inventory', ic: iInv, ct: inventory.length || undefined },
     { id: 'engines', l: 'Engines', ic: iEngine, ct: engines.length },
     { id: 'workorders', l: 'Work Orders', ic: iClip, ct: workOrders.filter(w => w.status === 'open').length || undefined },
