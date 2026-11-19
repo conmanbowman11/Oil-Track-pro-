@@ -3,7 +3,7 @@
 // Filter Sales: filter orders, supplier order list, filters on each machine,
 // filter invoice PDF, and billing for filter orders.
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type {
   Customer, CompanySettings, FilterOrder, FilterOrderItem, FilterOrderStatus, FleetUnit, Part, CustomerContact,
 } from '@/types/database';
@@ -13,7 +13,7 @@ import {
 } from '@/lib/hooks';
 import { contactsApi, filterOrdersApi, filterOrderItemsApi, equipmentFiltersApi, followUpsApi } from '@/lib/crmHooks';
 import {
-  calculateFilterOrderTotals, effectiveMarkupPct, filterSellPrice, formatMoney, round2,
+  calculateFilterOrderTotals, discountedPrice, effectiveDiscountPct, formatPct, formatMoney, round2,
 } from '@/lib/calculations';
 import {
   ModalShell, LocalNumberInput, LocalTextInput, IC, ICONS, fmtDate, todayISO, addDaysISO, telHref, loadSaveAs,
@@ -170,25 +170,52 @@ export async function buildFilterInvoicePdfBlob(args: {
   const phone = contact?.phone || c?.phone;
   if (phone) { doc.text(`Phone: ${phone}`, ml, y); y += 12; }
 
-  // Line items
-  const rows = items.map(i => {
-    const u = units.find(x => x.unit_id === i.unit_id);
-    return [i.part_number, i.description, u ? u.unit_number : '', String(i.quantity), formatMoney(i.unit_price), formatMoney(round2(i.quantity * i.unit_price))];
-  });
+  // Line items. Orders priced with a discount show Retail / Discount / Price;
+  // older orders (no retail saved on the lines) print exactly as before.
+  const discLayout = items.some(i => Number(i.retail_price) > 0);
+  const machineOf = (i: FilterOrderItem) => { const u = units.find(x => x.unit_id === i.unit_id); return u ? u.unit_number : ''; };
+  const head = { fillColor: [255, 255, 255] as [number, number, number], textColor: 0, fontStyle: 'bold' as const, lineWidth: 0.5, lineColor: [0, 0, 0] as [number, number, number] };
   let endY = 310;
-  autoTable(doc, {
-    startY: 300,
-    head: [['Part #', 'Description', 'Machine', 'Qty', 'Unit Price', 'Total']],
-    body: rows,
-    styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
-    headStyles: { fillColor: [255, 255, 255], textColor: 0, fontStyle: 'bold', lineWidth: 0.5, lineColor: [0, 0, 0] },
-    columnStyles: {
-      0: { cellWidth: 80, fontStyle: 'bold' }, 2: { cellWidth: 60 },
-      3: { halign: 'right', cellWidth: 40 }, 4: { halign: 'right', cellWidth: 65 }, 5: { halign: 'right', cellWidth: 70 },
-    },
-    margin: { left: ml, right: mr },
-  });
-  endY = (doc as any).lastAutoTable.finalY || endY;
+  if (discLayout) {
+    autoTable(doc, {
+      startY: 300,
+      head: [['Part #', 'Description', 'Machine', 'Qty', 'Retail', 'Discount', 'Price', 'Total']],
+      body: items.map(i => [
+        i.part_number, i.description, machineOf(i), String(i.quantity),
+        Number(i.retail_price) > 0 ? formatMoney(i.retail_price) : '', formatPct(effectiveDiscountPct(Number(i.retail_price), Number(i.unit_price))),
+        formatMoney(i.unit_price), formatMoney(round2(i.quantity * i.unit_price)),
+      ]),
+      styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
+      headStyles: head,
+      columnStyles: {
+        0: { cellWidth: 64, fontStyle: 'bold' }, 2: { cellWidth: 50 },
+        3: { halign: 'right', cellWidth: 30 }, 4: { halign: 'right', cellWidth: 54 }, 5: { halign: 'right', cellWidth: 50 },
+        6: { halign: 'right', cellWidth: 54 }, 7: { halign: 'right', cellWidth: 60 },
+      },
+      margin: { left: ml, right: mr },
+    });
+    endY = (doc as any).lastAutoTable.finalY || endY;
+    if (t.savings > 0) {
+      doc.setFont('helvetica', 'italic').setFontSize(9).setTextColor(0);
+      doc.text(`Parts discount savings: ${formatMoney(t.savings)}`, pw - mr, endY + 14, { align: 'right' });
+      doc.setFont('helvetica', 'normal');
+      endY += 14;
+    }
+  } else {
+    autoTable(doc, {
+      startY: 300,
+      head: [['Part #', 'Description', 'Machine', 'Qty', 'Unit Price', 'Total']],
+      body: items.map(i => [i.part_number, i.description, machineOf(i), String(i.quantity), formatMoney(i.unit_price), formatMoney(round2(i.quantity * i.unit_price))]),
+      styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
+      headStyles: head,
+      columnStyles: {
+        0: { cellWidth: 80, fontStyle: 'bold' }, 2: { cellWidth: 60 },
+        3: { halign: 'right', cellWidth: 40 }, 4: { halign: 'right', cellWidth: 65 }, 5: { halign: 'right', cellWidth: 70 },
+      },
+      margin: { left: ml, right: mr },
+    });
+    endY = (doc as any).lastAutoTable.finalY || endY;
+  }
 
   // Totals (right-aligned)
   let cy = Math.max(endY + 24, ph - 200);
@@ -230,6 +257,17 @@ export function filterInvoiceFileName(o: FilterOrder, c?: Customer): string {
   return `${o.invoice_number ? `INV-${o.invoice_number}` : orderLabel(o)}_${who}.pdf`;
 }
 
+// Retail / discount / below-cost info shown under a line on order screens (never on invoices)
+function LinePriceInfo({ retail, price, cost }: { retail: number; price: number; cost: number }) {
+  const below = price < (Number(cost) || 0);
+  return (
+    <span style={{ fontSize: 11, color: 'var(--tx3)', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      {retail > 0 && <span className="m">Retail {formatMoney(retail)} · {formatPct(effectiveDiscountPct(retail, price))} off</span>}
+      {below && <span className="below-cost-tag" style={{ marginLeft: 0 }}>Below cost ({formatMoney(cost)})</span>}
+    </span>
+  );
+}
+
 // ─────────────────────────────────────────────
 // Catalog picker (search + "add a new filter to the catalog")
 // ─────────────────────────────────────────────
@@ -239,8 +277,7 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
   const createPart = useCreatePart();
   const [q, setQ] = useState('');
   const [adding, setAdding] = useState(false);
-  const [np, setNp] = useState({ part_number: '', description: '', manufacturer: '', category: 'Oil Filter', cost: 0, markup: '' as string });
-  const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+  const [np, setNp] = useState({ part_number: '', description: '', manufacturer: '', category: 'Oil Filter', cost: 0, retail: 0 });
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return [];
@@ -251,17 +288,15 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
 
   const saveNew = async () => {
     if (!np.part_number.trim()) return;
-    const markup_pct = np.markup === '' ? null : Number(np.markup);
-    const sell = filterSellPrice(np.cost, effectiveMarkupPct(markup_pct, defMarkup));
     try {
       const created = await createPart.mutateAsync({
         part_number: np.part_number.trim(), description: np.description.trim(), manufacturer: np.manufacturer.trim() || 'Other',
-        category: np.category, cost: np.cost, retail_price: sell, supplier: company?.supplier_name || 'Other', notes: '',
-        markup_pct, active: true,
+        category: np.category, cost: np.cost, retail_price: np.retail, supplier: company?.supplier_name || 'Other', notes: '',
+        active: true, retail_verified: false,
       });
       toast(`${np.part_number} added to the catalog`);
       onPick(created as Part);
-      setNp({ part_number: '', description: '', manufacturer: '', category: 'Oil Filter', cost: 0, markup: '' });
+      setNp({ part_number: '', description: '', manufacturer: '', category: 'Oil Filter', cost: 0, retail: 0 });
       setAdding(false); setQ('');
     } catch (err: any) { toast(`Failed: ${err?.message || 'Unknown error'}`, true); }
   };
@@ -277,7 +312,7 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
               <span className="m" style={{ fontWeight: 700, minWidth: 90 }}>{p.part_number}</span>
               <span style={{ flex: 1 }}>{p.description}</span>
               <span className="tag tb">{p.manufacturer}</span>
-              <span className="m" style={{ color: 'var(--gn)' }}>{formatMoney(filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup)))}</span>
+              <span className="m" style={{ color: 'var(--tx2)' }} title="Retail (list) price">{formatMoney(p.retail_price)}</span>
             </div>
           ))}
           <div className="row" style={{ color: 'var(--ac)', fontWeight: 600 }} onClick={() => { setAdding(true); setNp(n => ({ ...n, part_number: q.trim().toUpperCase() })); }}>
@@ -300,11 +335,11 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
                 {['Oil Filter', 'Fuel System', 'Fuel/Water Separator', 'Air Filter', 'Air Filter - Secondary', 'Hydraulic', 'Transmission', 'Cabin Filter', 'Coolant', 'Other'].map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
-            <div className="fld"><label>Supplier cost</label><input type="number" step="0.01" inputMode="decimal" value={np.cost || ''} onChange={e => setNp(n => ({ ...n, cost: Number(e.target.value) || 0 }))} /></div>
-            <div className="fld"><label>Markup %</label><input type="number" step="0.1" inputMode="decimal" value={np.markup} placeholder={`${defMarkup}`} onChange={e => setNp(n => ({ ...n, markup: e.target.value }))} /></div>
+            <div className="fld"><label>Retail (list)</label><input type="number" step="0.01" inputMode="decimal" value={np.retail || ''} onChange={e => setNp(n => ({ ...n, retail: Number(e.target.value) || 0 }))} /></div>
+            <div className="fld"><label>Cost</label><input type="number" step="0.01" inputMode="decimal" value={np.cost || ''} onChange={e => setNp(n => ({ ...n, cost: Number(e.target.value) || 0 }))} /></div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12, color: 'var(--tx2)' }}>Sell price: <strong className="m">{formatMoney(filterSellPrice(np.cost, effectiveMarkupPct(np.markup === '' ? null : Number(np.markup), defMarkup)))}</strong></span>
+            <span style={{ fontSize: 12, color: 'var(--tx2)' }}>Saved to the catalog as <em>not yet retail-verified</em>.</span>
             <span style={{ display: 'flex', gap: 6 }}>
               <button className="btn bs" onClick={() => setAdding(false)}>Cancel</button>
               <button className="btn bs bp" disabled={!np.part_number.trim() || createPart.isPending} onClick={saveNew}>Save &amp; add</button>
@@ -321,7 +356,8 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
 // ─────────────────────────────────────────────
 interface DraftLine {
   key: string; part_id: string | null; part_number: string; description: string; brand: string;
-  unit_id: string | null; quantity: number; unit_cost: number; unit_price: number; catalog_price: number; price_overridden: boolean;
+  unit_id: string | null; quantity: number; unit_cost: number; unit_price: number; price_overridden: boolean;
+  retail_price: number; discount_pct: number;
 }
 
 export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onClose, onCreated, toast }: {
@@ -337,7 +373,7 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
   const createContact = contactsApi.useCreate();
   const createOrder = filterOrdersApi.useCreate();
   const createItems = filterOrderItemsApi.useCreateMany();
-  const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+  const defDisc = Number(company?.default_customer_discount_pct ?? 6);
 
   const [customerId, setCustomerId] = useState(presetCustomerId || '');
   const [custSearch, setCustSearch] = useState('');
@@ -347,10 +383,13 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
   const [notes, setNotes] = useState('');
   const [pickedUnits, setPickedUnits] = useState<string[]>([]);
 
-  const priceFor = (p: Part) => filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup));
+  // Discount for this order: the picked customer's, or the default for a quick-added customer
+  const pickedCust = customers.find(c => c.customer_id === customerId);
+  const discPct = pickedCust ? Number(pickedCust.discount_pct ?? defDisc) : defDisc;
   const lineFor = (p: Part, unit_id: string | null, qty: number): DraftLine => ({
     key: `${p.part_id}-${unit_id || ''}-${Math.random()}`, part_id: p.part_id, part_number: p.part_number, description: p.description,
-    brand: p.manufacturer, unit_id, quantity: qty, unit_cost: Number(p.cost) || 0, unit_price: priceFor(p), catalog_price: priceFor(p), price_overridden: false,
+    brand: p.manufacturer, unit_id, quantity: qty, unit_cost: Number(p.cost) || 0,
+    retail_price: Number(p.retail_price) || 0, discount_pct: discPct, unit_price: discountedPrice(p.retail_price, discPct), price_overridden: false,
   });
   const machineLines = (unit_id: string) => eqFilters.filter(ef => ef.unit_id === unit_id)
     .map(ef => { const p = parts.find(x => x.part_id === ef.part_id); return p ? lineFor(p, unit_id, ef.quantity_per_change || 1) : null; })
@@ -364,6 +403,11 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
     setPickedUnits(presetUnitIds);
     setLines(presetUnitIds.flatMap(machineLines));
   }
+
+  // When the customer (and so the discount) changes, re-price lines that weren't hand-priced
+  useEffect(() => {
+    setLines(ls => ls.map(l => l.price_overridden ? { ...l, discount_pct: discPct } : { ...l, discount_pct: discPct, unit_price: discountedPrice(l.retail_price, discPct) }));
+  }, [discPct]);
 
   const toggleUnit = (id: string) => {
     if (pickedUnits.includes(id)) {
@@ -389,7 +433,7 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
     let cid = customerId;
     let ctid = contactId || null;
     if (!cid && quick) {
-      const c = await createCustomer.mutateAsync({ name: quick.name.trim(), phone: quick.phone.trim(), contact_name: quick.contact.trim(), customer_type: 'filter_only', status: 'active' } as any);
+      const c = await createCustomer.mutateAsync({ name: quick.name.trim(), phone: quick.phone.trim(), contact_name: quick.contact.trim(), customer_type: 'filter_only', status: 'active', discount_pct: defDisc } as any);
       cid = c.customer_id;
       if (quick.contact.trim()) {
         const ct = await createContact.mutateAsync({ customer_id: cid, name: quick.contact.trim(), phone: quick.phone.trim(), is_primary: true });
@@ -404,6 +448,7 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
     await createItems.mutateAsync(lines.map((l, i) => ({
       filter_order_id: order.filter_order_id, part_id: l.part_id, part_number: l.part_number, description: l.description, brand: l.brand,
       unit_id: l.unit_id, quantity: l.quantity, unit_cost: l.unit_cost, unit_price: l.unit_price, price_overridden: l.price_overridden, sort_order: i,
+      retail_price: l.retail_price, discount_pct: l.discount_pct,
     })));
     toast(`Filter order ${orderLabel(order)} created`);
     onCreated(order);
@@ -476,10 +521,11 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
       {lines.length === 0 ? <div className="empty" style={{ padding: 12 }}><p>No filters added yet.</p></div> : (
         <div className="lines">
           {lines.map(l => (
-            <div key={l.key} className="line">
+            <div key={l.key} className={`line${l.unit_price < l.unit_cost ? ' below-cost' : ''}`}>
               <div className="line-main">
                 <span className="m" style={{ fontWeight: 700 }}>{l.part_number}</span>
                 <span style={{ fontSize: 12, color: 'var(--tx2)' }}>{l.description}{l.brand ? ` · ${l.brand}` : ''}</span>
+                <LinePriceInfo retail={l.retail_price} price={l.unit_price} cost={l.unit_cost} />
                 {custUnits.length > 0 && (
                   <select className="sort-sel" value={l.unit_id || ''} onChange={e => setLine(l.key, { unit_id: e.target.value || null })} aria-label="Machine">
                     <option value="">No machine</option>
@@ -489,11 +535,11 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
               </div>
               <div className="line-nums">
                 <label>Qty<LocalNumberInput value={l.quantity} min="1" onCommit={v => setLine(l.key, { quantity: Math.max(1, v) })} className="num-in" ariaLabel="Quantity" /></label>
-                <label>Price<LocalNumberInput value={l.unit_price} step="0.01" onCommit={v => setLine(l.key, { unit_price: v, price_overridden: round2(v) !== round2(l.catalog_price) })} className="num-in" ariaLabel="Unit price" /></label>
+                <label>Price<LocalNumberInput value={l.unit_price} step="0.01" onCommit={v => setLine(l.key, { unit_price: round2(v), price_overridden: round2(v) !== discountedPrice(l.retail_price, l.discount_pct) })} className="num-in" ariaLabel="Unit price" /></label>
                 <span className="m line-tot">{formatMoney(round2(l.quantity * l.unit_price))}</span>
                 <button className="btn bs bg" aria-label="Remove line" onClick={() => setLines(ls => ls.filter(x => x.key !== l.key))}>✕</button>
               </div>
-              {l.price_overridden && <span className="tag ta" style={{ alignSelf: 'flex-start' }}>custom price <button className="linkbtn" onClick={() => setLine(l.key, { unit_price: l.catalog_price, price_overridden: false })}>reset</button></span>}
+              {l.price_overridden && <span className="tag ta" style={{ alignSelf: 'flex-start' }}>custom price <button className="linkbtn" onClick={() => setLine(l.key, { unit_price: discountedPrice(l.retail_price, l.discount_pct), price_overridden: false })}>reset</button></span>}
             </div>
           ))}
         </div>
@@ -505,6 +551,7 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
         <div className="fld"><label>Notes</label><textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Needed by Friday, leave at shop…" /></div>
         <div>
           <div className="fld"><label>Tax rate %</label><LocalNumberInput value={taxRate} step="0.01" onCommit={setTaxRate} ariaLabel="Tax rate" /></div>
+          {t.savings > 0 && <div className="cr savings-row"><span>Parts discount savings</span><span className="m">{formatMoney(t.savings)}</span></div>}
           <div className="cr"><span>Subtotal</span><span className="m">{formatMoney(t.subtotal)}</span></div>
           <div className="cr"><span>Tax ({taxRate}%)</span><span className="m">{formatMoney(t.tax_amount)}</span></div>
           <div className="cr tot"><span>Total</span><span className="m">{formatMoney(t.total)}</span></div>
@@ -743,11 +790,12 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
   const contact = contacts.find(x => x.contact_id === o.contact_id) || contacts.find(x => x.customer_id === o.customer_id && x.is_primary);
   const custUnits = units.filter(u => u.customer_id === o.customer_id);
   const editable = !o.billed && !['paid', 'cancelled'].includes(o.status);
-  const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+  const custDisc = Number(c?.discount_pct ?? company?.default_customer_discount_pct ?? 6);
   const touch = { updated_at: new Date().toISOString() };
   const setOrder = (u: Partial<FilterOrder>) => updateOrder.mutateAsync({ id: o.filter_order_id, updates: { ...u, ...touch } }).catch((e: any) => toast(`Failed: ${e?.message}`, true));
   const setItem = (i: FilterOrderItem, u: Partial<FilterOrderItem>) => updateItem.mutateAsync({ id: i.item_id, updates: u }).catch((e: any) => toast(`Failed: ${e?.message}`, true));
-  const catalogPrice = (i: FilterOrderItem) => { const p = parts.find(x => x.part_id === i.part_id); return p ? filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup)) : null; };
+  // The line's list price (retail − discount saved on the line); null on lines saved before discount pricing
+  const listPrice = (i: FilterOrderItem) => Number(i.retail_price) > 0 ? discountedPrice(i.retail_price, i.discount_pct) : null;
 
   const downloadPdf = async () => {
     setPdfBusy(true);
@@ -818,9 +866,9 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
       <div className="card">
         <div className="ch"><h3>Filters ({t.item_count})</h3>{!editable && <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Locked ({o.billed ? 'billed' : o.status})</span>}</div>
         {editable && <CatalogPicker toast={toast} onPick={async p => {
-          const price = filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup));
+          const retail = Number(p.retail_price) || 0;
           try {
-            await createItem.mutateAsync({ filter_order_id: o.filter_order_id, part_id: p.part_id, part_number: p.part_number, description: p.description, brand: p.manufacturer, quantity: 1, unit_cost: Number(p.cost) || 0, unit_price: price, price_overridden: false, sort_order: items.length });
+            await createItem.mutateAsync({ filter_order_id: o.filter_order_id, part_id: p.part_id, part_number: p.part_number, description: p.description, brand: p.manufacturer, quantity: 1, unit_cost: Number(p.cost) || 0, retail_price: retail, discount_pct: custDisc, unit_price: discountedPrice(retail, custDisc), price_overridden: false, sort_order: items.length });
             setOrder({});
           } catch (e: any) { toast(`Failed: ${e?.message}`, true); }
         }} />}
@@ -828,12 +876,13 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
           <div className="lines">
             {items.map(i => {
               const u = units.find(x => x.unit_id === i.unit_id);
-              const cp = catalogPrice(i);
+              const cp = listPrice(i);
               return (
-                <div key={i.item_id} className="line">
+                <div key={i.item_id} className={`line${Number(i.unit_price) < Number(i.unit_cost) ? ' below-cost' : ''}`}>
                   <div className="line-main">
                     <span className="m" style={{ fontWeight: 700 }}>{i.part_number}</span>
                     <span style={{ fontSize: 12, color: 'var(--tx2)' }}>{i.description}{i.brand ? ` · ${i.brand}` : ''}</span>
+                    <LinePriceInfo retail={Number(i.retail_price) || 0} price={Number(i.unit_price)} cost={Number(i.unit_cost)} />
                     {editable && custUnits.length > 0 ? (
                       <select className="sort-sel" value={i.unit_id || ''} aria-label="Machine" onChange={e => setItem(i, { unit_id: e.target.value || null })}>
                         <option value="">No machine</option>
@@ -845,7 +894,7 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
                     {editable ? (
                       <>
                         <label>Qty<LocalNumberInput value={Number(i.quantity)} min="1" className="num-in" ariaLabel="Quantity" onCommit={v => setItem(i, { quantity: Math.max(1, v) })} /></label>
-                        <label>Price<LocalNumberInput value={Number(i.unit_price)} step="0.01" className="num-in" ariaLabel="Unit price" onCommit={v => setItem(i, { unit_price: v, price_overridden: cp == null ? true : round2(v) !== round2(cp) })} /></label>
+                        <label>Price<LocalNumberInput value={Number(i.unit_price)} step="0.01" className="num-in" ariaLabel="Unit price" onCommit={v => setItem(i, { unit_price: round2(v), price_overridden: cp == null ? true : round2(v) !== cp })} /></label>
                       </>
                     ) : <span className="m" style={{ fontSize: 12 }}>{i.quantity} × {formatMoney(i.unit_price)}</span>}
                     <span className="m line-tot">{formatMoney(round2(i.quantity * i.unit_price))}</span>
@@ -858,6 +907,7 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
           </div>
         )}
         <div style={{ maxWidth: 320, marginLeft: 'auto', marginTop: 12 }}>
+          {t.savings > 0 && <div className="cr savings-row"><span>Parts discount savings</span><span className="m">{formatMoney(t.savings)}</span></div>}
           <div className="cr"><span>Subtotal</span><span className="m">{formatMoney(t.subtotal)}</span></div>
           <div className="cr" style={{ alignItems: 'center' }}>
             <span>Tax {editable ? (
@@ -995,13 +1045,15 @@ export function MachineFilters({ unit, nav, toast, confirm }: { unit: FleetUnit;
   const { data: parts = [] } = useParts();
   const { data: templates = [] } = useServiceTemplates();
   const { data: company } = useCompanySettings();
+  const { data: customers = [] } = useCustomers();
   const create = equipmentFiltersApi.useCreate();
   const createMany = equipmentFiltersApi.useCreateMany();
   const update = equipmentFiltersApi.useUpdate();
   const del = equipmentFiltersApi.useDelete();
   const [ordering, setOrdering] = useState(false);
   const [picking, setPicking] = useState(false);
-  const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+  const owner = customers.find(c => c.customer_id === unit.customer_id);
+  const disc = Number(owner?.discount_pct ?? company?.default_customer_discount_pct ?? 6);
 
   const mine = eqFilters.filter(e => e.unit_id === unit.unit_id);
   const tpls = templates.filter(t => t.unit_id === unit.unit_id && t.parts_list.length);
@@ -1051,7 +1103,7 @@ export function MachineFilters({ unit, nav, toast, confirm }: { unit: FleetUnit;
                 </div>
                 <div className="line-nums">
                   <label>Qty / change<LocalNumberInput value={ef.quantity_per_change} min="1" className="num-in" ariaLabel="Quantity per change" onCommit={v => update.mutateAsync({ id: ef.equipment_filter_id, updates: { quantity_per_change: Math.max(1, Math.round(v)) } }).catch(fail)} /></label>
-                  {p && <span className="m line-tot" style={{ color: 'var(--gn)' }}>{formatMoney(filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup)))}</span>}
+                  {p && <span className="m line-tot" style={{ color: 'var(--gn)' }} title={`Retail ${formatMoney(p.retail_price)} less ${disc}%`}>{formatMoney(discountedPrice(p.retail_price, disc))}</span>}
                   <button className="btn bs bg" aria-label="Remove filter" onClick={() => confirm(`${p?.part_number || 'this filter'} from this machine`, async () => { await del.mutateAsync(ef.equipment_filter_id); })}>✕</button>
                 </div>
               </div>

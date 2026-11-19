@@ -52,8 +52,13 @@ import {
   round2,
   formatMoney,
   formatInvoiceNumber,
-  effectiveMarkupPct,
-  filterSellPrice,
+  discountedPrice,
+  effectiveDiscountPct,
+  formatPct,
+  partChargePrice,
+  recalculatePartLine,
+  workOrderPartsSavings,
+  workOrderHasDiscountLines,
 } from '@/lib/calculations';
 import type {
   Customer,
@@ -328,6 +333,13 @@ tbody tr{cursor:pointer;transition:background .06s}tbody tr:hover{background:var
   /* Supplier badges — flatten in print, show as plain text */
   .tag,.tag.tb{background:transparent!important;color:#000!important;border:none!important;padding:0!important;font-size:9.5pt!important;font-weight:400}
 
+  /* ---- Discount-priced parts table: 7 columns, numbers right-aligned ---- */
+  .parts-disc th:nth-child(n+3),.parts-disc td:nth-child(n+3){text-align:right}
+  .parts-disc td:nth-child(n+3){font-family:'IBM Plex Mono',monospace;white-space:nowrap}
+  .parts-disc th:nth-child(2),.parts-disc td:nth-child(2){width:38%}
+  .parts-disc td:nth-child(n+3) .print-only{display:inline!important}
+  .savings-row{color:#000!important;font-weight:400!important;font-style:italic}
+
   /* ---- WORK PERFORMED (compact paragraph style) ---- */
   .wk{display:inline!important;padding:0!important;border:none!important;background:transparent!important;font-size:9pt;line-height:1.4;color:#000!important}
   .wk:not(:last-child)::after{content:" · ";color:#666}
@@ -447,6 +459,14 @@ body.printing-oil-slips .app{display:none}
 .sort-sel{padding:5px 9px;background:var(--bg);border:1px solid var(--bd);border-radius:var(--r);font-size:12px;font-family:'Outfit',sans-serif;color:var(--tx);cursor:pointer;outline:none;max-width:100%}
 .sort-sel:hover,.sort-sel:focus{border-color:var(--ac)}
 .ch h3 > svg{display:inline-block;vertical-align:-2px;margin-right:5px}
+.vchk{width:24px;height:24px;border-radius:5px;border:1.5px solid var(--bd);background:var(--cd);color:#fff;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:13px;padding:0}
+.vchk:hover{border-color:var(--gn)}
+.vchk.on{background:var(--gn);border-color:var(--gn)}
+@media screen{.below-cost td{background:var(--rd2)!important}}
+.savings-row{color:var(--gn);font-weight:600}
+.below-cost-tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--rd);color:#fff;font-size:10px;font-weight:700;font-family:'IBM Plex Mono',monospace}
+.line.below-cost{background:var(--rd2);border-color:var(--rd)}
+.savings-line{display:flex;justify-content:flex-end;gap:16px;font-size:12px;color:var(--gn);font-weight:600;margin-top:6px}
 .rev-split{font-size:10.5px;color:var(--tx3);margin-top:2px;font-family:'IBM Plex Mono',monospace}
 
 
@@ -505,11 +525,11 @@ body.printing-oil-slips .app{display:none}
 // =============================================
 // CUSTOMER FORM
 // =============================================
-function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Customer> | null; onSaveAsync: (c: Partial<Customer>) => Promise<void>; onClose: () => void }) {
+function CustomerForm({ initial, defaultDiscount = 6, onSaveAsync, onClose }: { initial: Partial<Customer> | null; defaultDiscount?: number; onSaveAsync: (c: Partial<Customer>) => Promise<void>; onClose: () => void }) {
   const [form, setForm] = useState<Partial<Customer>>(
     initial || {
       name: '', contact_name: '', phone: '', email: '', billing_address: '', notes: '',
-      customer_type: 'service', status: 'active',
+      customer_type: 'service', status: 'active', discount_pct: defaultDiscount,
       default_fees: {
         labor_rate: 0, environmental_fee: 0, travel_charge: 0, service_supplies: 0,
         oil_sample_fee: 0, oil_retail_per_gallon: 0, oil_cost_per_gallon: 0,
@@ -554,6 +574,14 @@ function CustomerForm({ initial, onSaveAsync, onClose }: { initial: Partial<Cust
       <div className="fld"><label>Email</label><input value={form.email || ''} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></div>
       <div className="fld"><label>Billing Address</label><textarea value={form.billing_address || ''} onChange={e => setForm(p => ({ ...p, billing_address: e.target.value }))} placeholder="Street address&#10;City, State ZIP" style={{ minHeight: 60, fontFamily: "'Outfit',sans-serif" }} /></div>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+
+      <div className="section-hdr">Parts Discount</div>
+      <div className="fr">
+        <div className="fld"><label>Discount % off retail</label>
+          <LocalNumberInput value={Number(form.discount_pct ?? defaultDiscount)} step="0.1" placeholder="0" ariaLabel="Discount percent" onCommit={v => setForm(p => ({ ...p, discount_pct: Math.max(0, Math.min(100, v)) }))} />
+        </div>
+        <p style={{ fontSize: 11.5, color: 'var(--tx2)', alignSelf: 'center' }}>Applies to every part on new work orders and filter orders. Oil, labor and fees are not discounted. Orders already saved keep their prices.</p>
+      </div>
 
       {form.customer_type !== 'filter_only' && (<>
       <div className="section-hdr">Pricing & Fees (defaults for this customer)</div>
@@ -645,12 +673,10 @@ function EngineForm({ initial, onSaveAsync, onClose }: { initial: Partial<Engine
 // =============================================
 // PART FORM
 // =============================================
-function PartForm({ initial, defaultMarkup = 30, onSaveAsync, onClose }: { initial: Partial<Part> | null; defaultMarkup?: number; onSaveAsync: (p: Partial<Part>) => Promise<void>; onClose: () => void }) {
-  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '', markup_pct: null, active: true });
-  const usedMarkup = effectiveMarkupPct(form.markup_pct, defaultMarkup);
-  const sellPrice = filterSellPrice(form.cost || 0, usedMarkup);
-  const margin = (form.retail_price || 0) - (form.cost || 0);
-  const marginPct = form.cost && form.cost > 0 ? (margin / form.cost) * 100 : 0;
+function PartForm({ initial, standardDiscount = 6, onSaveAsync, onClose }: { initial: Partial<Part> | null; standardDiscount?: number; onSaveAsync: (p: Partial<Part>) => Promise<void>; onClose: () => void }) {
+  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '', active: true, retail_verified: false });
+  const sellAtStd = discountedPrice(form.retail_price || 0, standardDiscount);
+  const margin = round2(sellAtStd - (form.cost || 0));
   return (
     <ModalShell title={initial?.part_id ? 'Edit Part' : 'Add Part'} onClose={onClose} onSave={() => onSaveAsync(form)} saveDisabled={!form.part_number || !form.description}>
       <div className="fr">
@@ -675,31 +701,20 @@ function PartForm({ initial, defaultMarkup = 30, onSaveAsync, onClose }: { initi
         </div>
       </div>
       <div className="fr">
-        <div className="fld"><label>Cost</label><input type="number" step="0.01" value={form.cost || 0} onChange={e => setForm(p => ({ ...p, cost: Number(e.target.value) || 0 }))} /></div>
-        <div className="fld"><label>Retail Price</label><input type="number" step="0.01" value={form.retail_price || 0} onChange={e => setForm(p => ({ ...p, retail_price: Number(e.target.value) || 0 }))} /></div>
+        <div className="fld"><label>Retail Price (list price)</label><input type="number" step="0.01" inputMode="decimal" value={form.retail_price || 0} onChange={e => setForm(p => ({ ...p, retail_price: Number(e.target.value) || 0 }))} /></div>
+        <div className="fld"><label>Cost (what you pay)</label><input type="number" step="0.01" inputMode="decimal" value={form.cost || 0} onChange={e => setForm(p => ({ ...p, cost: Number(e.target.value) || 0 }))} /></div>
       </div>
-      <div style={{ padding: '8px 12px', background: 'var(--bg)', borderRadius: 'var(--r)', fontSize: 12, color: 'var(--tx2)', marginBottom: 12 }}>
-        Service margin: <strong>{formatMoney(round2(margin))}</strong> ({marginPct.toFixed(1)}%)
+      <div style={{ padding: '8px 12px', background: margin < 0 ? 'var(--rd2)' : 'var(--bg)', borderRadius: 'var(--r)', fontSize: 12, color: margin < 0 ? 'var(--rd)' : 'var(--tx2)', marginBottom: 12 }}>
+        At the standard {standardDiscount}% discount this sells for <strong className="m">{formatMoney(sellAtStd)}</strong> — margin <strong className="m">{formatMoney(margin)}</strong>{margin < 0 && ' (below cost)'}
       </div>
-      <div className="section-hdr">Filter Sales Price</div>
-      <div className="fr">
-        <div className="fld"><label>Markup % (blank = default {defaultMarkup}%)</label>
-          <input type="number" step="0.1" inputMode="decimal" value={form.markup_pct == null ? '' : form.markup_pct} placeholder={`${defaultMarkup}`}
-            onChange={e => setForm(p => ({ ...p, markup_pct: e.target.value === '' ? null : Number(e.target.value) }))} />
-        </div>
-        <div className="fld"><label>Filter Sell Price</label>
-          <div style={{ padding: '7px 11px', background: 'var(--gn2)', color: 'var(--gn)', borderRadius: 'var(--r)', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace" }}>
-            {formatMoney(sellPrice)} <span style={{ fontWeight: 400, fontSize: 11 }}>({usedMarkup}% markup)</span>
-          </div>
-        </div>
-      </div>
-      <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: -6, marginBottom: 12 }}>Retail Price is used on oil change work orders. Filter Sell Price (cost + markup) is used on filter orders.</p>
-      <div className="fld">
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', textTransform: 'none', letterSpacing: 0, color: 'var(--tx)' }}>
-          <input type="checkbox" checked={form.active !== false} onChange={e => setForm(p => ({ ...p, active: e.target.checked }))} style={{ accentColor: 'var(--ac)', width: 'auto' }} />
-          Active (uncheck to hide from new filter orders)
-        </label>
-      </div>
+      <label className="cbx" style={{ marginBottom: 8 }}>
+        <input type="checkbox" checked={!!form.retail_verified} onChange={e => setForm(p => ({ ...p, retail_verified: e.target.checked }))} />
+        Retail verified (I&apos;ve confirmed this is the real list price)
+      </label>
+      <label className="cbx" style={{ marginBottom: 12 }}>
+        <input type="checkbox" checked={form.active !== false} onChange={e => setForm(p => ({ ...p, active: e.target.checked }))} />
+        Active (uncheck to hide from new filter orders)
+      </label>
       <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
     </ModalShell>
   );
@@ -933,10 +948,12 @@ function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | n
         <button className="btn bp" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</button>
       </div>
       <div className="card">
-        <div className="ch"><h3>Filter Sales</h3></div>
-        <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 14 }}>Pricing and tax for filter orders, plus your filter supplier&apos;s info.</p>
+        <div className="ch"><h3>Parts Pricing &amp; Filter Sales</h3></div>
+        <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 14 }}>Parts discount for new customers, the filter order tax rate, and your filter supplier&apos;s info.</p>
         <div className="fr">
-          <div className="fld"><label>Default Filter Markup (%)</label><input type="number" step="0.1" inputMode="decimal" value={form.default_filter_markup_pct ?? 30} onChange={e => setForm(p => ({ ...p, default_filter_markup_pct: Number(e.target.value) || 0 }))} /></div>
+          <div className="fld"><label>Default Customer Discount (%)</label><input type="number" step="0.1" inputMode="decimal" value={form.default_customer_discount_pct ?? 6} onChange={e => setForm(p => ({ ...p, default_customer_discount_pct: Number(e.target.value) || 0 }))} />
+            <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>New customers start with this discount off retail on every part. Change it per customer on their page.</p>
+          </div>
           <div className="fld"><label>Filter Order Tax Rate (%)</label><input type="number" step="0.01" inputMode="decimal" value={form.filter_tax_rate_percent ?? 2.5} onChange={e => setForm(p => ({ ...p, filter_tax_rate_percent: Number(e.target.value) || 0 }))} />
             <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Starting rate for new filter orders. You can change it on each order.</p>
           </div>
@@ -1036,6 +1053,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const applyFilterBilling = useFilterBilling((m, e) => showToast(m, e));
   const overdueCustIds = useOverdueCustomerIds();
   const [partsActive, setPartsActive] = useState<'active' | 'inactive' | 'all'>('active');
+  const [partsNeedCheck, setPartsNeedCheck] = useState(false);
   // Inventory page search
   const [invSearch, setInvSearch] = useState('');
   // Inventory add-item picker search
@@ -1204,14 +1222,26 @@ export default function OilTrackApp({ user }: { user: User }) {
     let afterEqY = eqY + 14 + eqWrapped.length * 11;
 
     // ─── Parts table ───────────────────────────────────
+    // Discount-priced work orders: Retail / Discount / Price columns + savings line.
+    // Older work orders (no discount saved) print exactly as before.
+    const discLayout = !wo.customer_provided_filters && workOrderHasDiscountLines(wo.parts_used);
     const rows: (string | number)[][] = [];
-    if (!wo.customer_provided_filters) {
+    if (discLayout) {
+      wo.parts_used.forEach(p => {
+        const price = partChargePrice(p);
+        rows.push([p.part_number, p.description, String(p.qty), formatMoney(p.retail_price), formatPct(effectiveDiscountPct(p.retail_price, price)), formatMoney(price), formatMoney(p.line_total_retail)]);
+      });
+      if (wo.oil_used) {
+        const oilDesc = `${wo.oil_used.type} engine oil${wo.customer_provided_oil ? ' (customer supplied)' : ''}`;
+        rows.push(['—', oilDesc, `${wo.oil_used.gallons} gal`, '', '', formatMoney(wo.oil_used.retail_per_gallon), formatMoney(wo.oil_used.total_retail)]);
+      }
+    } else if (!wo.customer_provided_filters) {
       wo.parts_used.forEach(p => rows.push([
         p.part_number, p.description, p.supplier, String(p.qty),
         formatMoney(p.retail_price), formatMoney(p.line_total_retail),
       ]));
     }
-    if (wo.oil_used) {
+    if (wo.oil_used && !discLayout) {
       const oilDesc = `${wo.oil_used.type} engine oil${wo.customer_provided_oil ? ' (customer supplied)' : ''}`;
       rows.push([
         '—', oilDesc, wo.customer_provided_oil ? 'Customer' : 'CAT',
@@ -1221,7 +1251,32 @@ export default function OilTrackApp({ user }: { user: User }) {
     }
 
     let endY = afterEqY + 10;
-    if (rows.length > 0) {
+    if (rows.length > 0 && discLayout) {
+      autoTable(doc, {
+        startY: afterEqY + 10,
+        head: [['Part #', 'Description', 'Qty', 'Retail', 'Discount', 'Price', 'Total']],
+        body: rows,
+        styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
+        headStyles: { fillColor: [255, 255, 255], textColor: 0, fontStyle: 'bold', lineWidth: 0.5, lineColor: [0, 0, 0] },
+        columnStyles: {
+          0: { cellWidth: 68, fontStyle: 'bold' },
+          2: { halign: 'right', cellWidth: 44 },
+          3: { halign: 'right', cellWidth: 58 },
+          4: { halign: 'right', cellWidth: 52 },
+          5: { halign: 'right', cellWidth: 58 },
+          6: { halign: 'right', cellWidth: 64 },
+        },
+        margin: { left: ml, right: mr },
+      });
+      endY = (doc as any).lastAutoTable.finalY || endY;
+      const savings = workOrderPartsSavings(wo.parts_used);
+      if (savings > 0) {
+        doc.setFont('helvetica', 'italic').setFontSize(9).setTextColor(0);
+        doc.text(`Parts discount savings: ${formatMoney(savings)}`, pw - mr, endY + 14, { align: 'right' });
+        doc.setFont('helvetica', 'normal');
+        endY += 14;
+      }
+    } else if (rows.length > 0) {
       autoTable(doc, {
         startY: afterEqY + 10,
         head: [['Part #', 'Description', 'Supplier', 'Qty', 'Retail', 'Total']],
@@ -1351,14 +1406,15 @@ export default function OilTrackApp({ user }: { user: User }) {
     for (const ref of template.parts_list) {
       const p = getPart(ref.part_number);
       if (!p) continue;
-      const override = customer.part_price_overrides?.[ref.part_number];
-      const retail = override?.retail ?? p.retail_price;
-      const cost = override?.cost ?? p.cost;
-      partsUsed.push({
+      // Catalog retail minus this customer's discount (custom per-customer part prices are no longer used)
+      const retail = Number(p.retail_price) || 0;
+      const cost = Number(p.cost) || 0;
+      const discount_pct = Number(customer.discount_pct ?? company?.default_customer_discount_pct ?? 6);
+      partsUsed.push(recalculatePartLine({
         part_number: p.part_number, description: p.description, manufacturer: p.manufacturer, supplier: p.supplier,
-        qty: ref.qty, retail_price: retail, cost,
-        line_total_retail: round2(retail * ref.qty), line_total_cost: round2(cost * ref.qty),
-      });
+        qty: ref.qty, retail_price: retail, cost, discount_pct, sell_price: discountedPrice(retail, discount_pct), price_overridden: false,
+        line_total_retail: 0, line_total_cost: 0,
+      }));
     }
 
     const custOil = !!(customer as any).provides_own_oil;
@@ -1593,12 +1649,13 @@ export default function OilTrackApp({ user }: { user: User }) {
         {loadingCustomers ? <div className="loading">Loading customers…</div> : customers.length === 0 ? (<div className="empty"><p>No customers yet. Click "Add" to create your first one.</p></div>) : list.length === 0 ? (<div className="empty"><p>No customers match these filters.</p></div>) : (
           <div className="tw">
           <table>
-            <thead><tr><th>Name</th><th>Type</th><th>Contact</th><th>Units</th><th>WOs</th><th title="Overdue follow-up"></th></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>Discount</th><th>Contact</th><th>Units</th><th>WOs</th><th title="Overdue follow-up"></th></tr></thead>
             <tbody>
               {list.map(c => (
                 <tr key={c.customer_id} onClick={() => nav('cust', c.customer_id, c.name)} style={{ opacity: c.status === 'inactive' ? 0.6 : 1 }}>
                   <td style={{ fontWeight: 600 }}>{c.name}</td>
                   <td><CustomerTypeBadge c={c} /></td>
+                  <td className="m">{formatPct(Number(c.discount_pct ?? 0))}</td>
                   <td style={{ color: 'var(--tx2)' }}>{c.contact_name || '—'}</td>
                   <td className="m">{units.filter(u => u.customer_id === c.customer_id).length}</td>
                   <td className="m">{workOrders.filter(w => w.customer_id === c.customer_id).length}</td>
@@ -1695,7 +1752,10 @@ export default function OilTrackApp({ user }: { user: User }) {
           <div className="cust-hd">
             <div>
               <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.03em' }}>{c.name}</div>
-              <div style={{ marginTop: 4 }}><CustomerTypeBadge c={c} /></div>
+              <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <CustomerTypeBadge c={c} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--gn)' }}>Parts discount: {formatPct(Number(c.discount_pct ?? 0))}</span>
+              </div>
               <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 4, whiteSpace: 'pre-wrap' }}>{c.billing_address || 'No address'}</div>
             </div>
             <button className="btn bs" onClick={() => setModal({ t: 'editCust', d: c })}>{IC(iEdit, 14)} Edit</button>
@@ -1849,6 +1909,20 @@ export default function OilTrackApp({ user }: { user: User }) {
       const newFees = { ...wo.fees, [k]: num };
       const totals = calculateWorkOrderTotals({ parts: wo.parts_used, oil: wo.oil_used, fees: newFees, tax_rate_percent: wo.tax_rate_percent });
       updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { fees: newFees, ...totals } });
+    };
+    // Change the price charged on one part line (marks it as a custom price)
+    const updPartPrice = (idx: number, price: number) => {
+      const newParts = wo.parts_used.map((p, j) => {
+        if (j !== idx) return p;
+        const listSell = discountedPrice(p.retail_price, p.discount_pct ?? 0);
+        return recalculatePartLine({ ...p, sell_price: round2(price), price_overridden: round2(price) !== listSell });
+      });
+      const totals = calculateWorkOrderTotals({ parts: newParts, oil: wo.oil_used, fees: wo.fees, tax_rate_percent: wo.tax_rate_percent });
+      updateWorkOrder.mutate({ work_order_id: wo.work_order_id, updates: { parts_used: newParts, ...totals } });
+    };
+    const resetPartPrice = (idx: number) => {
+      const p = wo.parts_used[idx];
+      updPartPrice(idx, discountedPrice(p.retail_price, p.discount_pct ?? 0));
     };
     const toggleOil = (on: boolean) => {
       const cf = (c?.default_fees || {}) as any;
@@ -2026,7 +2100,8 @@ export default function OilTrackApp({ user }: { user: User }) {
           </div>
         </div>
 
-        {!wo.customer_provided_filters && (wo.parts_used.length > 0 || wo.oil_used) && (
+{/* Work orders saved before discount pricing keep their original layout */}
+                {!wo.customer_provided_filters && (wo.parts_used.length > 0 || wo.oil_used) && !workOrderHasDiscountLines(wo.parts_used) && (
           <div className="ws wo-parts">
             <h4>Parts / Filter Order</h4>
             <table>
@@ -2054,6 +2129,56 @@ export default function OilTrackApp({ user }: { user: User }) {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+        {!wo.customer_provided_filters && (wo.parts_used.length > 0 || wo.oil_used) && workOrderHasDiscountLines(wo.parts_used) && (
+          <div className="ws wo-parts">
+            <h4>Parts / Filter Order</h4>
+            <table className="parts-disc">
+              <thead><tr><th>Part #</th><th>Description</th><th>Qty</th><th>Retail</th><th>Discount</th><th>Price</th><th>Total</th></tr></thead>
+              <tbody>
+                {wo.parts_used.map((p, i) => {
+                  const price = partChargePrice(p);
+                  const below = price < (Number(p.cost) || 0);
+                  return (
+                    <tr key={i} className={below ? 'below-cost' : ''} style={{ cursor: 'default' }}>
+                      <td className="m" style={{ fontWeight: 600 }}>{p.part_number}</td>
+                      <td style={{ fontSize: 12 }}>
+                        {p.description}
+                        {p.price_overridden && <span className="tag ta no-print" style={{ marginLeft: 6 }}>custom price{isOpen && <button className="linkbtn" onClick={() => resetPartPrice(i)}>reset</button>}</span>}
+                        {below && <span className="below-cost-tag no-print">Below cost ({formatMoney(p.cost)})</span>}
+                      </td>
+                      <td className="m">{p.qty}</td>
+                      <td className="m">{formatMoney(p.retail_price)}</td>
+                      <td className="m">{formatPct(effectiveDiscountPct(p.retail_price, price))}</td>
+                      <td className="m">
+                        {isOpen ? (
+                          <>
+                            <LocalNumberInput value={price} step="0.01" ariaLabel={`Price for ${p.part_number}`} className="num-in no-print" onCommit={v => updPartPrice(i, v)} />
+                            <span className="print-only">{formatMoney(price)}</span>
+                          </>
+                        ) : formatMoney(price)}
+                      </td>
+                      <td className="m">{formatMoney(p.line_total_retail)}</td>
+                    </tr>
+                  );
+                })}
+                {wo.oil_used && (
+                  <tr className="oil-row print-only-row" style={{ cursor: 'default' }}>
+                    <td className="m" style={{ color: '#888' }}>—</td>
+                    <td style={{ fontSize: 12 }}>{wo.oil_used.type} engine oil{(wo as any).customer_provided_oil ? ' (customer supplied)' : ''}</td>
+                    <td className="m">{wo.oil_used.gallons} gal</td>
+                    <td></td>
+                    <td></td>
+                    <td className="m">{formatMoney(wo.oil_used.retail_per_gallon)}</td>
+                    <td className="m">{formatMoney(wo.oil_used.total_retail)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {workOrderPartsSavings(wo.parts_used) > 0 && (
+              <div className="cr savings-row"><span>Parts discount savings</span><span className="m">{formatMoney(workOrderPartsSavings(wo.parts_used))}</span></div>
+            )}
           </div>
         )}
 
@@ -2715,10 +2840,12 @@ export default function OilTrackApp({ user }: { user: User }) {
 
   const renderParts = () => {
     const q = partsSearch.trim().toLowerCase();
-    const defMarkup = Number(company?.default_filter_markup_pct ?? 30);
+    const stdDisc = Number(company?.default_customer_discount_pct ?? 6);
+    const needCheckCount = parts.filter(p => !p.retail_verified && p.active !== false).length;
     const filtered = parts.filter(p =>
       (partsActive === 'all' || (partsActive === 'active' ? p.active !== false : p.active === false)) &&
       (partsCat === 'all' || p.category === partsCat) &&
+      (!partsNeedCheck || !p.retail_verified) &&
       (!q ||
         (p.part_number || '').toLowerCase().includes(q) ||
         (p.description || '').toLowerCase().includes(q) ||
@@ -2740,7 +2867,7 @@ export default function OilTrackApp({ user }: { user: User }) {
           <button className="btn bs bp" onClick={() => setModal({ t: 'addPart' })}>{IC(iPlus, 15)} Add Part</button>
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--tx2)', marginBottom: 10 }}>
-          One catalog for oil changes and filter sales. <strong>Retail</strong> is used on work orders. <strong>Sell</strong> = cost + markup (default {defMarkup}%) and is used on filter orders. Edit cost and markup right in the table.
+          Customers pay <strong>Retail</strong> minus their discount (standard {stdDisc}%). <strong>Cost</strong> is what you pay and never shows on invoices. Edit cost and retail right in the table, and tick <strong>Verified</strong> once you&apos;ve confirmed a part&apos;s real retail price.
         </p>
         {parts.length > 0 && (
           <>
@@ -2756,7 +2883,10 @@ export default function OilTrackApp({ user }: { user: User }) {
                 <button onClick={() => setPartsSearch('')} title="Clear search" style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', border: 'none', background: 'transparent', color: 'var(--tx3)', cursor: 'pointer', fontSize: 16, padding: '2px 8px', lineHeight: 1 }}>✕</button>
               )}
             </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+              <button className={`chip${partsNeedCheck ? ' on' : ''}`} onClick={() => setPartsNeedCheck(v => !v)} title="Show only parts whose retail price hasn't been verified">
+                Needs retail check ({needCheckCount})
+              </button>
               <select className="sort-sel" value={partsCat} onChange={e => setPartsCat(e.target.value)} aria-label="Filter by category">
                 <option value="all">All categories</option>
                 {cats.map(c => <option key={c} value={c}>{c}</option>)}
@@ -2767,6 +2897,7 @@ export default function OilTrackApp({ user }: { user: User }) {
                 <option value="all">Active + inactive</option>
               </select>
             </div>
+            {needCheckCount > 0 && <p style={{ fontSize: 12, color: 'var(--am)', fontWeight: 600, marginBottom: 8 }}>{needCheckCount} part{needCheckCount === 1 ? '' : 's'} need{needCheckCount === 1 ? 's' : ''} retail check</p>}
           </>
         )}
         {parts.length === 0 ? (
@@ -2776,25 +2907,33 @@ export default function OilTrackApp({ user }: { user: User }) {
         ) : (
           <div className="tw">
           <table>
-            <thead><tr><th>Part #</th><th>Description</th><th>Mfr</th><th>Category</th><th>Cost</th><th>Markup %</th><th>Sell</th><th>Retail</th><th></th></tr></thead>
+            <thead><tr><th>Part #</th><th>Description</th><th>Category</th><th>Cost</th><th>Retail</th><th>Margin at {stdDisc}%</th><th>Verified</th><th>Active</th></tr></thead>
             <tbody>
-              {filtered.map(p => (
+              {filtered.map(p => {
+                const margin = round2(discountedPrice(p.retail_price, stdDisc) - (Number(p.cost) || 0));
+                return (
                 <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })} style={{ opacity: p.active === false ? 0.55 : 1 }}>
-                  <td className="m" style={{ fontWeight: 700 }}>{p.part_number}{p.active === false && <span className="tag" style={{ marginLeft: 6, background: 'var(--bg2)', color: 'var(--tx3)' }}>inactive</span>}</td>
-                  <td>{p.description}</td>
-                  <td><span className="tag tb">{p.manufacturer}</span></td>
+                  <td className="m" style={{ fontWeight: 700 }}>{p.part_number}</td>
+                  <td>{p.description}{p.manufacturer && <div style={{ fontSize: 10.5, color: 'var(--tx3)' }}>{p.manufacturer}</div>}</td>
                   <td style={{ fontSize: 11, color: 'var(--tx2)' }}>{p.category}</td>
                   <td onClick={e => e.stopPropagation()}>
                     <LocalNumberInput value={Number(p.cost) || 0} step="0.01" ariaLabel={`Cost for ${p.part_number}`} onCommit={v => commitPart(p, { cost: v })} style={cellInput} />
                   </td>
                   <td onClick={e => e.stopPropagation()}>
-                    <NullableNumberInput value={p.markup_pct ?? null} step="0.1" placeholder={`${defMarkup}`} ariaLabel={`Markup for ${p.part_number}`} onCommit={v => commitPart(p, { markup_pct: v })} style={{ ...cellInput, width: 60 }} />
+                    <LocalNumberInput value={Number(p.retail_price) || 0} step="0.01" ariaLabel={`Retail for ${p.part_number}`} onCommit={v => commitPart(p, { retail_price: v })} style={cellInput} />
                   </td>
-                  <td className="m" style={{ fontWeight: 600, color: 'var(--gn)' }}>{formatMoney(filterSellPrice(p.cost, effectiveMarkupPct(p.markup_pct, defMarkup)))}</td>
-                  <td className="m" style={{ fontWeight: 600 }}>{formatMoney(p.retail_price)}</td>
-                  <td><button className="btn bs" aria-label="Edit part">{IC(iEdit, 13)}</button></td>
+                  <td className="m" style={{ fontWeight: 600, color: margin < 0 ? 'var(--rd)' : 'var(--gn)' }}>{formatMoney(margin)}</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <button className={`vchk${p.retail_verified ? ' on' : ''}`} aria-pressed={!!p.retail_verified} aria-label={`Retail verified for ${p.part_number}`}
+                      title={p.retail_verified ? 'Retail verified — click to un-check' : 'Click once you have confirmed the real retail price'}
+                      onClick={() => commitPart(p, { retail_verified: !p.retail_verified })}>{p.retail_verified ? '✓' : ''}</button>
+                  </td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" className="batch-cb" checked={p.active !== false} aria-label={`Active ${p.part_number}`} onChange={e => commitPart(p, { active: e.target.checked })} />
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           </div>
@@ -2892,7 +3031,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     }
 
     if (modal.t === 'addCust' || modal.t === 'editCust') {
-      return (<CustomerForm initial={modal.d || null} onClose={() => setModal(null)} onSaveAsync={async (form) => {
+      return (<CustomerForm initial={modal.d || null} defaultDiscount={Number(company?.default_customer_discount_pct ?? 6)} onClose={() => setModal(null)} onSaveAsync={async (form) => {
         if (modal.t === 'addCust') { await createCustomer.mutateAsync(form); showToast('Customer added'); }
         else { await updateCustomer.mutateAsync({ customer_id: (modal.d as Customer).customer_id, updates: form }); showToast('Customer updated'); }
         setModal(null);
@@ -2918,7 +3057,7 @@ export default function OilTrackApp({ user }: { user: User }) {
       }} />);
     }
     if (modal.t === 'addPart' || modal.t === 'editPart') {
-      return (<PartForm initial={modal.d || null} defaultMarkup={Number(company?.default_filter_markup_pct ?? 30)} onClose={() => setModal(null)} onSaveAsync={async (form) => {
+      return (<PartForm initial={modal.d || null} standardDiscount={Number(company?.default_customer_discount_pct ?? 6)} onClose={() => setModal(null)} onSaveAsync={async (form) => {
         if (modal.t === 'addPart') { await createPart.mutateAsync(form); showToast('Part added'); }
         else { await updatePart.mutateAsync({ part_id: (modal.d as Part).part_id, updates: form }); showToast('Part updated'); }
         setModal(null);
