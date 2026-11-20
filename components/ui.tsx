@@ -97,7 +97,7 @@ export function LocalNumberInput({
 // =============================================
 // NULLABLE NUMBER INPUT
 // Like LocalNumberInput, but blank means "no value" (null) instead of 0.
-// Used for the per-part markup % (blank = use the default markup).
+// Blank means "no value" (null) rather than 0.
 // =============================================
 export function NullableNumberInput({
   value, onCommit, style, placeholder, step = '0.01', className, ariaLabel,

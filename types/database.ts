@@ -18,7 +18,8 @@ export interface CompanySettings {
   invoice_footer_notes: string;
   next_invoice_number: number;
   // Filter sales (migration 001)
-  default_filter_markup_pct: number;
+  default_filter_markup_pct: number; // no longer used (kept in the database)
+  default_customer_discount_pct: number;
   filter_tax_rate_percent: number;
   supplier_name: string;
   supplier_contact_name: string;
@@ -58,8 +59,9 @@ export interface Customer {
   billing_address: string;
   notes: string;
   default_fees: CustomerDefaultFees;
-  part_price_overrides: Record<string, PartPriceOverride>;
+  part_price_overrides: Record<string, PartPriceOverride>; // no longer used (kept in the database)
   customer_type: CustomerType;
+  discount_pct: number; // % off retail on every catalog part
   status: CustomerStatus;
   created_at: string;
   updated_at: string;
@@ -88,9 +90,10 @@ export interface Part {
   cost: number;
   supplier: string;
   notes: string;
-  // Filter sales: blank markup = use default_filter_markup_pct from settings
-  markup_pct: number | null;
+  markup_pct: number | null; // no longer used (kept in the database)
   active: boolean;
+  retail_verified: boolean; // real retail price confirmed
+  no_discount: boolean; // always sell at full retail (e.g. John Deere)
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +169,12 @@ export interface ServicePartSnapshot {
   qty: number;
   retail_price: number;
   cost: number;
+  // Discount pricing (missing on lines saved before it existed)
+  discount_pct?: number;
+  sell_price?: number;
+  price_overridden?: boolean;
+  no_discount?: boolean; // part was marked "No discount" when the line was added
+  // Amount charged for the line (sell price × qty; retail × qty on old lines)
   line_total_retail: number;
   line_total_cost: number;
 }
@@ -339,7 +348,9 @@ export interface FilterOrderItem {
   unit_id: string | null;
   quantity: number;
   unit_cost: number;
-  unit_price: number;
+  unit_price: number; // sell price charged
+  retail_price: number; // 0 on lines saved before discount pricing
+  discount_pct: number;
   price_overridden: boolean;
   sort_order: number;
   created_at: string;

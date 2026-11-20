@@ -68,14 +68,22 @@ export function calculateWorkOrderTotals(args: {
 }
 
 // ─── Line total recalculation for a single part ───
+// The price charged is sell_price (retail minus the customer's discount).
+// Old work-order lines saved before discount pricing have no sell_price;
+// they keep charging retail_price exactly as before.
 export function recalculatePartLine(
   part: ServicePartSnapshot
 ): ServicePartSnapshot {
   return {
     ...part,
-    line_total_retail: round2(part.retail_price * part.qty),
+    line_total_retail: round2(partChargePrice(part) * part.qty),
     line_total_cost: round2(part.cost * part.qty),
   };
+}
+
+// Price actually charged per unit for a work-order part line
+export function partChargePrice(part: ServicePartSnapshot): number {
+  return part.sell_price != null ? Number(part.sell_price) : Number(part.retail_price) || 0;
 }
 
 // ─── Oil total recalculation ───
@@ -98,17 +106,44 @@ export function formatInvoiceNumber(n: number): string {
 }
 
 // =============================================
-// FILTER SALES PRICING
+// DISCOUNT PRICING
+// sell price = retail × (1 − customer discount % / 100), rounded to the cent
+// Applies to every catalog part (filters and lab/testing items) on work
+// orders and filter orders. Oil, labor and fees are never discounted.
 // =============================================
-
-// Markup used for a part: its own markup if set, otherwise the global default.
-export function effectiveMarkupPct(partMarkup: number | null | undefined, defaultMarkup: number): number {
-  return partMarkup != null && !isNaN(Number(partMarkup)) ? Number(partMarkup) : Number(defaultMarkup) || 0;
+export function discountedPrice(retail: number, discountPct: number): number {
+  return round2((Number(retail) || 0) * (1 - (Number(discountPct) || 0) / 100));
 }
 
-// sell price = supplier cost × (1 + markup / 100), rounded to the cent
-export function filterSellPrice(cost: number, markupPct: number): number {
-  return round2((Number(cost) || 0) * (1 + (Number(markupPct) || 0) / 100));
+// Discount % to use for a part: 0 when the part is marked "No discount"
+// (e.g. John Deere parts resold at cost), otherwise the customer's discount.
+// Every place that prices a part from a customer/standard discount uses this.
+export function partDiscountPct(part: { no_discount?: boolean | null } | null | undefined, customerDiscountPct: number): number {
+  return part?.no_discount ? 0 : Number(customerDiscountPct) || 0;
+}
+
+// Discount shown on a line: worked out from retail vs. the price charged,
+// so a hand-changed price still shows the real discount.
+export function effectiveDiscountPct(retail: number, price: number): number | null {
+  if (!retail || retail <= 0) return null;
+  return Math.round((1 - price / retail) * 1000) / 10;
+}
+export function formatPct(n: number | null): string {
+  if (n == null) return '—';
+  return `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
+}
+
+// Total saved off retail on discounted work-order part lines
+// (no-discount lines, saved with discount_pct 0, add nothing)
+export function workOrderPartsSavings(parts: ServicePartSnapshot[]): number {
+  return round2(parts
+    .filter(p => p.sell_price != null && !p.no_discount && (Number(p.discount_pct) || 0) > 0)
+    .reduce((s, p) => s + (Number(p.retail_price) - Number(p.sell_price)) * (Number(p.qty) || 0), 0));
+}
+// True when any part line on this work order was priced with a discount
+// (old work orders print exactly as before)
+export function workOrderHasDiscountLines(parts: ServicePartSnapshot[]): boolean {
+  return parts.some(p => p.sell_price != null);
 }
 
 export interface FilterOrderTotals {
@@ -118,20 +153,26 @@ export interface FilterOrderTotals {
   total: number;
   total_cost: number;
   profit: number;
+  savings: number;
 }
 
 // Tax applies to every filter line (filters are parts) at the order's own tax rate.
 export function calculateFilterOrderTotals(
-  items: { quantity: number; unit_price: number; unit_cost: number }[],
+  items: { quantity: number; unit_price: number; unit_cost: number; retail_price?: number; discount_pct?: number }[],
   tax_rate_percent: number
 ): FilterOrderTotals {
   const subtotal = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0), 0));
   const total_cost = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_cost) || 0), 0));
   const tax_amount = round2(subtotal * ((Number(tax_rate_percent) || 0) / 100));
   const total = round2(subtotal + tax_amount);
+  const savings = round2(items
+    // only discounted lines count; no-discount lines are saved with discount_pct 0
+    .filter(i => Number(i.retail_price) > 0 && (Number(i.discount_pct) || 0) > 0)
+    .reduce((s, i) => s + (Number(i.retail_price) - Number(i.unit_price)) * (Number(i.quantity) || 0), 0));
   return {
     item_count: items.reduce((s, i) => s + (Number(i.quantity) || 0), 0),
     subtotal, tax_amount, total, total_cost,
     profit: round2(subtotal - total_cost),
+    savings,
   };
 }
