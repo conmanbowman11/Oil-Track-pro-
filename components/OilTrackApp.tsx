@@ -56,6 +56,7 @@ import {
   effectiveDiscountPct,
   formatPct,
   partChargePrice,
+  partDiscountPct,
   recalculatePartLine,
   workOrderPartsSavings,
   workOrderHasDiscountLines,
@@ -462,8 +463,10 @@ body.printing-oil-slips .app{display:none}
 .vchk{width:24px;height:24px;border-radius:5px;border:1.5px solid var(--bd);background:var(--cd);color:#fff;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:13px;padding:0}
 .vchk:hover{border-color:var(--gn)}
 .vchk.on{background:var(--gn);border-color:var(--gn)}
+.vchk.nd.on{background:var(--tx2);border-color:var(--tx2)}
 @media screen{.below-cost td{background:var(--rd2)!important}}
 .savings-row{color:var(--gn);font-weight:600}
+.tag.nodisc{background:var(--bg2);color:var(--tx2);border:1px solid var(--bd)}
 .below-cost-tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;background:var(--rd);color:#fff;font-size:10px;font-weight:700;font-family:'IBM Plex Mono',monospace}
 .line.below-cost{background:var(--rd2);border-color:var(--rd)}
 .savings-line{display:flex;justify-content:flex-end;gap:16px;font-size:12px;color:var(--gn);font-weight:600;margin-top:6px}
@@ -521,6 +524,14 @@ body.printing-oil-slips .app{display:none}
 }
 
 `;
+
+// Discount shown on an invoice line: "—" for lines sold at full retail
+// (no-discount parts / 0% customers) unless the price was changed by hand.
+function invoiceDiscountText(p: ServicePartSnapshot): string {
+  const price = partChargePrice(p);
+  if (!p.price_overridden && (Number(p.discount_pct) || 0) === 0) return '—';
+  return formatPct(effectiveDiscountPct(p.retail_price, price));
+}
 
 // =============================================
 // CUSTOMER FORM
@@ -674,8 +685,8 @@ function EngineForm({ initial, onSaveAsync, onClose }: { initial: Partial<Engine
 // PART FORM
 // =============================================
 function PartForm({ initial, standardDiscount = 6, onSaveAsync, onClose }: { initial: Partial<Part> | null; standardDiscount?: number; onSaveAsync: (p: Partial<Part>) => Promise<void>; onClose: () => void }) {
-  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '', active: true, retail_verified: false });
-  const sellAtStd = discountedPrice(form.retail_price || 0, standardDiscount);
+  const [form, setForm] = useState<Partial<Part>>(initial || { part_number: '', description: '', manufacturer: 'CAT', category: 'Other', retail_price: 0, cost: 0, supplier: 'CAT', notes: '', active: true, retail_verified: false, no_discount: false });
+  const sellAtStd = discountedPrice(form.retail_price || 0, partDiscountPct(form, standardDiscount));
   const margin = round2(sellAtStd - (form.cost || 0));
   return (
     <ModalShell title={initial?.part_id ? 'Edit Part' : 'Add Part'} onClose={onClose} onSave={() => onSaveAsync(form)} saveDisabled={!form.part_number || !form.description}>
@@ -705,12 +716,17 @@ function PartForm({ initial, standardDiscount = 6, onSaveAsync, onClose }: { ini
         <div className="fld"><label>Cost (what you pay)</label><input type="number" step="0.01" inputMode="decimal" value={form.cost || 0} onChange={e => setForm(p => ({ ...p, cost: Number(e.target.value) || 0 }))} /></div>
       </div>
       <div style={{ padding: '8px 12px', background: margin < 0 ? 'var(--rd2)' : 'var(--bg)', borderRadius: 'var(--r)', fontSize: 12, color: margin < 0 ? 'var(--rd)' : 'var(--tx2)', marginBottom: 12 }}>
-        At the standard {standardDiscount}% discount this sells for <strong className="m">{formatMoney(sellAtStd)}</strong> — margin <strong className="m">{formatMoney(margin)}</strong>{margin < 0 && ' (below cost)'}
+        {form.no_discount ? 'No discount — always sells for' : `At the standard ${standardDiscount}% discount this sells for`} <strong className="m">{formatMoney(sellAtStd)}</strong> — margin <strong className="m">{formatMoney(margin)}</strong>{margin < 0 && ' (below cost)'}
       </div>
       <label className="cbx" style={{ marginBottom: 8 }}>
         <input type="checkbox" checked={!!form.retail_verified} onChange={e => setForm(p => ({ ...p, retail_verified: e.target.checked }))} />
         Retail verified (I&apos;ve confirmed this is the real list price)
       </label>
+      <label className="cbx" style={{ marginBottom: 2 }}>
+        <input type="checkbox" checked={!!form.no_discount} onChange={e => setForm(p => ({ ...p, no_discount: e.target.checked }))} />
+        No discount (always sell at retail)
+      </label>
+      <p style={{ fontSize: 11, color: 'var(--tx3)', margin: '0 0 8px 24px' }}>Use for parts you can&apos;t discount, like John Deere.</p>
       <label className="cbx" style={{ marginBottom: 12 }}>
         <input type="checkbox" checked={form.active !== false} onChange={e => setForm(p => ({ ...p, active: e.target.checked }))} />
         Active (uncheck to hide from new filter orders)
@@ -789,6 +805,7 @@ function ServiceTemplateForm({
                   <span className="m" style={{ fontWeight: 700, minWidth: 90 }}>{p.part_number}</span>
                   <span style={{ flex: 1 }}>{p.description}</span>
                   <span className="tag tb">{p.manufacturer}</span>
+                  {p.no_discount && <span className="tag nodisc">No discount</span>}
                   <span className="m" style={{ color: 'var(--tx2)' }}>{formatMoney(p.retail_price)}</span>
                 </div>
               ))
@@ -1054,6 +1071,7 @@ export default function OilTrackApp({ user }: { user: User }) {
   const overdueCustIds = useOverdueCustomerIds();
   const [partsActive, setPartsActive] = useState<'active' | 'inactive' | 'all'>('active');
   const [partsNeedCheck, setPartsNeedCheck] = useState(false);
+  const [partsNoDisc, setPartsNoDisc] = useState(false);
   // Inventory page search
   const [invSearch, setInvSearch] = useState('');
   // Inventory add-item picker search
@@ -1229,7 +1247,7 @@ export default function OilTrackApp({ user }: { user: User }) {
     if (discLayout) {
       wo.parts_used.forEach(p => {
         const price = partChargePrice(p);
-        rows.push([p.part_number, p.description, String(p.qty), formatMoney(p.retail_price), formatPct(effectiveDiscountPct(p.retail_price, price)), formatMoney(price), formatMoney(p.line_total_retail)]);
+        rows.push([p.part_number, p.description, String(p.qty), formatMoney(p.retail_price), invoiceDiscountText(p), formatMoney(price), formatMoney(p.line_total_retail)]);
       });
       if (wo.oil_used) {
         const oilDesc = `${wo.oil_used.type} engine oil${wo.customer_provided_oil ? ' (customer supplied)' : ''}`;
@@ -1409,10 +1427,10 @@ export default function OilTrackApp({ user }: { user: User }) {
       // Catalog retail minus this customer's discount (custom per-customer part prices are no longer used)
       const retail = Number(p.retail_price) || 0;
       const cost = Number(p.cost) || 0;
-      const discount_pct = Number(customer.discount_pct ?? company?.default_customer_discount_pct ?? 6);
+      const discount_pct = partDiscountPct(p, Number(customer.discount_pct ?? company?.default_customer_discount_pct ?? 6));
       partsUsed.push(recalculatePartLine({
         part_number: p.part_number, description: p.description, manufacturer: p.manufacturer, supplier: p.supplier,
-        qty: ref.qty, retail_price: retail, cost, discount_pct, sell_price: discountedPrice(retail, discount_pct), price_overridden: false,
+        qty: ref.qty, retail_price: retail, cost, discount_pct, sell_price: discountedPrice(retail, discount_pct), price_overridden: false, no_discount: !!p.no_discount,
         line_total_retail: 0, line_total_cost: 0,
       }));
     }
@@ -2146,11 +2164,15 @@ export default function OilTrackApp({ user }: { user: User }) {
                       <td style={{ fontSize: 12 }}>
                         {p.description}
                         {p.price_overridden && <span className="tag ta no-print" style={{ marginLeft: 6 }}>custom price{isOpen && <button className="linkbtn" onClick={() => resetPartPrice(i)}>reset</button>}</span>}
+                        {p.no_discount && <span className="tag nodisc no-print" style={{ marginLeft: 6 }}>No discount</span>}
                         {below && <span className="below-cost-tag no-print">Below cost ({formatMoney(p.cost)})</span>}
                       </td>
                       <td className="m">{p.qty}</td>
                       <td className="m">{formatMoney(p.retail_price)}</td>
-                      <td className="m">{formatPct(effectiveDiscountPct(p.retail_price, price))}</td>
+                      <td className="m">
+                        <span className="no-print">{formatPct(effectiveDiscountPct(p.retail_price, price))}</span>
+                        <span className="print-only">{invoiceDiscountText(p)}</span>
+                      </td>
                       <td className="m">
                         {isOpen ? (
                           <>
@@ -2846,6 +2868,7 @@ export default function OilTrackApp({ user }: { user: User }) {
       (partsActive === 'all' || (partsActive === 'active' ? p.active !== false : p.active === false)) &&
       (partsCat === 'all' || p.category === partsCat) &&
       (!partsNeedCheck || !p.retail_verified) &&
+      (!partsNoDisc || !!p.no_discount) &&
       (!q ||
         (p.part_number || '').toLowerCase().includes(q) ||
         (p.description || '').toLowerCase().includes(q) ||
@@ -2887,6 +2910,9 @@ export default function OilTrackApp({ user }: { user: User }) {
               <button className={`chip${partsNeedCheck ? ' on' : ''}`} onClick={() => setPartsNeedCheck(v => !v)} title="Show only parts whose retail price hasn't been verified">
                 Needs retail check ({needCheckCount})
               </button>
+              <button className={`chip${partsNoDisc ? ' on' : ''}`} onClick={() => setPartsNoDisc(v => !v)} title="Show only parts that always sell at retail">
+                No-discount parts ({parts.filter(p => p.no_discount).length})
+              </button>
               <select className="sort-sel" value={partsCat} onChange={e => setPartsCat(e.target.value)} aria-label="Filter by category">
                 <option value="all">All categories</option>
                 {cats.map(c => <option key={c} value={c}>{c}</option>)}
@@ -2907,14 +2933,15 @@ export default function OilTrackApp({ user }: { user: User }) {
         ) : (
           <div className="tw">
           <table>
-            <thead><tr><th>Part #</th><th>Description</th><th>Category</th><th>Cost</th><th>Retail</th><th>Margin at {stdDisc}%</th><th>Verified</th><th>Active</th></tr></thead>
+            <thead><tr><th>Part #</th><th>Description</th><th>Category</th><th>Cost</th><th>Retail</th><th>Margin at {stdDisc}%</th><th>Verified</th><th>No disc.</th><th>Active</th></tr></thead>
             <tbody>
               {filtered.map(p => {
-                const margin = round2(discountedPrice(p.retail_price, stdDisc) - (Number(p.cost) || 0));
+                // No-discount parts sell at retail, so their margin is retail − cost
+                const margin = round2(discountedPrice(p.retail_price, partDiscountPct(p, stdDisc)) - (Number(p.cost) || 0));
                 return (
                 <tr key={p.part_id} onClick={() => setModal({ t: 'editPart', d: p })} style={{ opacity: p.active === false ? 0.55 : 1 }}>
                   <td className="m" style={{ fontWeight: 700 }}>{p.part_number}</td>
-                  <td>{p.description}{p.manufacturer && <div style={{ fontSize: 10.5, color: 'var(--tx3)' }}>{p.manufacturer}</div>}</td>
+                  <td>{p.description}{(p.manufacturer || p.no_discount) && <div style={{ fontSize: 10.5, color: 'var(--tx3)' }}>{p.manufacturer}{p.no_discount && <span className="tag nodisc" style={{ marginLeft: 6 }}>No discount</span>}</div>}</td>
                   <td style={{ fontSize: 11, color: 'var(--tx2)' }}>{p.category}</td>
                   <td onClick={e => e.stopPropagation()}>
                     <LocalNumberInput value={Number(p.cost) || 0} step="0.01" ariaLabel={`Cost for ${p.part_number}`} onCommit={v => commitPart(p, { cost: v })} style={cellInput} />
@@ -2927,6 +2954,11 @@ export default function OilTrackApp({ user }: { user: User }) {
                     <button className={`vchk${p.retail_verified ? ' on' : ''}`} aria-pressed={!!p.retail_verified} aria-label={`Retail verified for ${p.part_number}`}
                       title={p.retail_verified ? 'Retail verified — click to un-check' : 'Click once you have confirmed the real retail price'}
                       onClick={() => commitPart(p, { retail_verified: !p.retail_verified })}>{p.retail_verified ? '✓' : ''}</button>
+                  </td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <button className={`vchk nd${p.no_discount ? ' on' : ''}`} aria-pressed={!!p.no_discount} aria-label={`No discount for ${p.part_number}`}
+                      title={p.no_discount ? 'No discount — always sells at retail. Click to allow discounts.' : 'Click if this part can\'t be discounted (always sells at retail)'}
+                      onClick={() => commitPart(p, { no_discount: !p.no_discount })}>{p.no_discount ? '✓' : ''}</button>
                   </td>
                   <td onClick={e => e.stopPropagation()}>
                     <input type="checkbox" className="batch-cb" checked={p.active !== false} aria-label={`Active ${p.part_number}`} onChange={e => commitPart(p, { active: e.target.checked })} />

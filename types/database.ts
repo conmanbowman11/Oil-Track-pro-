@@ -93,6 +93,7 @@ export interface Part {
   markup_pct: number | null; // no longer used (kept in the database)
   active: boolean;
   retail_verified: boolean; // real retail price confirmed
+  no_discount: boolean; // always sell at full retail (e.g. John Deere)
   created_at: string;
   updated_at: string;
 }
@@ -172,6 +173,7 @@ export interface ServicePartSnapshot {
   discount_pct?: number;
   sell_price?: number;
   price_overridden?: boolean;
+  no_discount?: boolean; // part was marked "No discount" when the line was added
   // Amount charged for the line (sell price × qty; retail × qty on old lines)
   line_total_retail: number;
   line_total_cost: number;

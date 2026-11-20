@@ -115,6 +115,13 @@ export function discountedPrice(retail: number, discountPct: number): number {
   return round2((Number(retail) || 0) * (1 - (Number(discountPct) || 0) / 100));
 }
 
+// Discount % to use for a part: 0 when the part is marked "No discount"
+// (e.g. John Deere parts resold at cost), otherwise the customer's discount.
+// Every place that prices a part from a customer/standard discount uses this.
+export function partDiscountPct(part: { no_discount?: boolean | null } | null | undefined, customerDiscountPct: number): number {
+  return part?.no_discount ? 0 : Number(customerDiscountPct) || 0;
+}
+
 // Discount shown on a line: worked out from retail vs. the price charged,
 // so a hand-changed price still shows the real discount.
 export function effectiveDiscountPct(retail: number, price: number): number | null {
@@ -127,9 +134,10 @@ export function formatPct(n: number | null): string {
 }
 
 // Total saved off retail on discounted work-order part lines
+// (no-discount lines, saved with discount_pct 0, add nothing)
 export function workOrderPartsSavings(parts: ServicePartSnapshot[]): number {
   return round2(parts
-    .filter(p => p.sell_price != null)
+    .filter(p => p.sell_price != null && !p.no_discount && (Number(p.discount_pct) || 0) > 0)
     .reduce((s, p) => s + (Number(p.retail_price) - Number(p.sell_price)) * (Number(p.qty) || 0), 0));
 }
 // True when any part line on this work order was priced with a discount
@@ -150,7 +158,7 @@ export interface FilterOrderTotals {
 
 // Tax applies to every filter line (filters are parts) at the order's own tax rate.
 export function calculateFilterOrderTotals(
-  items: { quantity: number; unit_price: number; unit_cost: number; retail_price?: number }[],
+  items: { quantity: number; unit_price: number; unit_cost: number; retail_price?: number; discount_pct?: number }[],
   tax_rate_percent: number
 ): FilterOrderTotals {
   const subtotal = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unit_price) || 0), 0));
@@ -158,7 +166,8 @@ export function calculateFilterOrderTotals(
   const tax_amount = round2(subtotal * ((Number(tax_rate_percent) || 0) / 100));
   const total = round2(subtotal + tax_amount);
   const savings = round2(items
-    .filter(i => Number(i.retail_price) > 0)
+    // only discounted lines count; no-discount lines are saved with discount_pct 0
+    .filter(i => Number(i.retail_price) > 0 && (Number(i.discount_pct) || 0) > 0)
     .reduce((s, i) => s + (Number(i.retail_price) - Number(i.unit_price)) * (Number(i.quantity) || 0), 0));
   return {
     item_count: items.reduce((s, i) => s + (Number(i.quantity) || 0), 0),

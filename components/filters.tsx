@@ -13,7 +13,7 @@ import {
 } from '@/lib/hooks';
 import { contactsApi, filterOrdersApi, filterOrderItemsApi, equipmentFiltersApi, followUpsApi } from '@/lib/crmHooks';
 import {
-  calculateFilterOrderTotals, discountedPrice, effectiveDiscountPct, formatPct, formatMoney, round2,
+  calculateFilterOrderTotals, discountedPrice, partDiscountPct, effectiveDiscountPct, formatPct, formatMoney, round2,
 } from '@/lib/calculations';
 import {
   ModalShell, LocalNumberInput, LocalTextInput, IC, ICONS, fmtDate, todayISO, addDaysISO, telHref, loadSaveAs,
@@ -182,7 +182,7 @@ export async function buildFilterInvoicePdfBlob(args: {
       head: [['Part #', 'Description', 'Machine', 'Qty', 'Retail', 'Discount', 'Price', 'Total']],
       body: items.map(i => [
         i.part_number, i.description, machineOf(i), String(i.quantity),
-        Number(i.retail_price) > 0 ? formatMoney(i.retail_price) : '', formatPct(effectiveDiscountPct(Number(i.retail_price), Number(i.unit_price))),
+        Number(i.retail_price) > 0 ? formatMoney(i.retail_price) : '', Number(i.retail_price) > 0 ? itemDiscountText(i) : '',
         formatMoney(i.unit_price), formatMoney(round2(i.quantity * i.unit_price)),
       ]),
       styles: { fontSize: 9, cellPadding: 4, textColor: 0 },
@@ -257,12 +257,20 @@ export function filterInvoiceFileName(o: FilterOrder, c?: Customer): string {
   return `${o.invoice_number ? `INV-${o.invoice_number}` : orderLabel(o)}_${who}.pdf`;
 }
 
+// Discount shown on a filter invoice line: "—" when sold at full retail
+// (no-discount parts / 0% customers) unless the price was changed by hand
+function itemDiscountText(i: FilterOrderItem): string {
+  if (!i.price_overridden && (Number(i.discount_pct) || 0) === 0) return '—';
+  return formatPct(effectiveDiscountPct(Number(i.retail_price), Number(i.unit_price)));
+}
+
 // Retail / discount / below-cost info shown under a line on order screens (never on invoices)
-function LinePriceInfo({ retail, price, cost }: { retail: number; price: number; cost: number }) {
+function LinePriceInfo({ retail, price, cost, noDiscount }: { retail: number; price: number; cost: number; noDiscount?: boolean }) {
   const below = price < (Number(cost) || 0);
   return (
     <span style={{ fontSize: 11, color: 'var(--tx3)', display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
       {retail > 0 && <span className="m">Retail {formatMoney(retail)} · {formatPct(effectiveDiscountPct(retail, price))} off</span>}
+      {noDiscount && <span className="tag nodisc">No discount</span>}
       {below && <span className="below-cost-tag" style={{ marginLeft: 0 }}>Below cost ({formatMoney(cost)})</span>}
     </span>
   );
@@ -312,6 +320,7 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
               <span className="m" style={{ fontWeight: 700, minWidth: 90 }}>{p.part_number}</span>
               <span style={{ flex: 1 }}>{p.description}</span>
               <span className="tag tb">{p.manufacturer}</span>
+              {p.no_discount && <span className="tag nodisc">No discount</span>}
               <span className="m" style={{ color: 'var(--tx2)' }} title="Retail (list) price">{formatMoney(p.retail_price)}</span>
             </div>
           ))}
@@ -357,7 +366,7 @@ function CatalogPicker({ onPick, toast }: { onPick: (p: Part) => void; toast: To
 interface DraftLine {
   key: string; part_id: string | null; part_number: string; description: string; brand: string;
   unit_id: string | null; quantity: number; unit_cost: number; unit_price: number; price_overridden: boolean;
-  retail_price: number; discount_pct: number;
+  retail_price: number; discount_pct: number; no_discount: boolean;
 }
 
 export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onClose, onCreated, toast }: {
@@ -389,7 +398,8 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
   const lineFor = (p: Part, unit_id: string | null, qty: number): DraftLine => ({
     key: `${p.part_id}-${unit_id || ''}-${Math.random()}`, part_id: p.part_id, part_number: p.part_number, description: p.description,
     brand: p.manufacturer, unit_id, quantity: qty, unit_cost: Number(p.cost) || 0,
-    retail_price: Number(p.retail_price) || 0, discount_pct: discPct, unit_price: discountedPrice(p.retail_price, discPct), price_overridden: false,
+    retail_price: Number(p.retail_price) || 0, discount_pct: partDiscountPct(p, discPct), no_discount: !!p.no_discount,
+    unit_price: discountedPrice(p.retail_price, partDiscountPct(p, discPct)), price_overridden: false,
   });
   const machineLines = (unit_id: string) => eqFilters.filter(ef => ef.unit_id === unit_id)
     .map(ef => { const p = parts.find(x => x.part_id === ef.part_id); return p ? lineFor(p, unit_id, ef.quantity_per_change || 1) : null; })
@@ -406,7 +416,11 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
 
   // When the customer (and so the discount) changes, re-price lines that weren't hand-priced
   useEffect(() => {
-    setLines(ls => ls.map(l => l.price_overridden ? { ...l, discount_pct: discPct } : { ...l, discount_pct: discPct, unit_price: discountedPrice(l.retail_price, discPct) }));
+    // No-discount lines stay at 0% (full retail) whatever the customer's discount
+    setLines(ls => ls.map(l => {
+      const d = partDiscountPct(l, discPct);
+      return l.price_overridden ? { ...l, discount_pct: d } : { ...l, discount_pct: d, unit_price: discountedPrice(l.retail_price, d) };
+    }));
   }, [discPct]);
 
   const toggleUnit = (id: string) => {
@@ -525,7 +539,7 @@ export function NewFilterOrderModal({ presetCustomerId, presetUnitIds = [], onCl
               <div className="line-main">
                 <span className="m" style={{ fontWeight: 700 }}>{l.part_number}</span>
                 <span style={{ fontSize: 12, color: 'var(--tx2)' }}>{l.description}{l.brand ? ` · ${l.brand}` : ''}</span>
-                <LinePriceInfo retail={l.retail_price} price={l.unit_price} cost={l.unit_cost} />
+                <LinePriceInfo retail={l.retail_price} price={l.unit_price} cost={l.unit_cost} noDiscount={l.no_discount} />
                 {custUnits.length > 0 && (
                   <select className="sort-sel" value={l.unit_id || ''} onChange={e => setLine(l.key, { unit_id: e.target.value || null })} aria-label="Machine">
                     <option value="">No machine</option>
@@ -867,8 +881,9 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
         <div className="ch"><h3>Filters ({t.item_count})</h3>{!editable && <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Locked ({o.billed ? 'billed' : o.status})</span>}</div>
         {editable && <CatalogPicker toast={toast} onPick={async p => {
           const retail = Number(p.retail_price) || 0;
+          const d = partDiscountPct(p, custDisc);
           try {
-            await createItem.mutateAsync({ filter_order_id: o.filter_order_id, part_id: p.part_id, part_number: p.part_number, description: p.description, brand: p.manufacturer, quantity: 1, unit_cost: Number(p.cost) || 0, retail_price: retail, discount_pct: custDisc, unit_price: discountedPrice(retail, custDisc), price_overridden: false, sort_order: items.length });
+            await createItem.mutateAsync({ filter_order_id: o.filter_order_id, part_id: p.part_id, part_number: p.part_number, description: p.description, brand: p.manufacturer, quantity: 1, unit_cost: Number(p.cost) || 0, retail_price: retail, discount_pct: d, unit_price: discountedPrice(retail, d), price_overridden: false, sort_order: items.length });
             setOrder({});
           } catch (e: any) { toast(`Failed: ${e?.message}`, true); }
         }} />}
@@ -882,7 +897,8 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
                   <div className="line-main">
                     <span className="m" style={{ fontWeight: 700 }}>{i.part_number}</span>
                     <span style={{ fontSize: 12, color: 'var(--tx2)' }}>{i.description}{i.brand ? ` · ${i.brand}` : ''}</span>
-                    <LinePriceInfo retail={Number(i.retail_price) || 0} price={Number(i.unit_price)} cost={Number(i.unit_cost)} />
+                    <LinePriceInfo retail={Number(i.retail_price) || 0} price={Number(i.unit_price)} cost={Number(i.unit_cost)}
+                      noDiscount={Number(i.retail_price) > 0 && Number(i.discount_pct) === 0 && !!parts.find(x => x.part_id === i.part_id)?.no_discount} />
                     {editable && custUnits.length > 0 ? (
                       <select className="sort-sel" value={i.unit_id || ''} aria-label="Machine" onChange={e => setItem(i, { unit_id: e.target.value || null })}>
                         <option value="">No machine</option>
@@ -1103,7 +1119,7 @@ export function MachineFilters({ unit, nav, toast, confirm }: { unit: FleetUnit;
                 </div>
                 <div className="line-nums">
                   <label>Qty / change<LocalNumberInput value={ef.quantity_per_change} min="1" className="num-in" ariaLabel="Quantity per change" onCommit={v => update.mutateAsync({ id: ef.equipment_filter_id, updates: { quantity_per_change: Math.max(1, Math.round(v)) } }).catch(fail)} /></label>
-                  {p && <span className="m line-tot" style={{ color: 'var(--gn)' }} title={`Retail ${formatMoney(p.retail_price)} less ${disc}%`}>{formatMoney(discountedPrice(p.retail_price, disc))}</span>}
+                  {p && <span className="m line-tot" style={{ color: 'var(--gn)' }} title={p.no_discount ? 'No discount — sells at retail' : `Retail ${formatMoney(p.retail_price)} less ${disc}%`}>{formatMoney(discountedPrice(p.retail_price, partDiscountPct(p, disc)))}</span>}
                   <button className="btn bs bg" aria-label="Remove filter" onClick={() => confirm(`${p?.part_number || 'this filter'} from this machine`, async () => { await del.mutateAsync(ef.equipment_filter_id); })}>✕</button>
                 </div>
               </div>
