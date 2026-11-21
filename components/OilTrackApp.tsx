@@ -624,38 +624,60 @@ function CustomerForm({ initial, defaultDiscount = 6, onSaveAsync, onClose }: { 
 // =============================================
 // UNIT FORM
 // =============================================
-function UnitForm({ initial, customer_id, engines, hoursLastUpdated, onSaveAsync, onClose }: { initial: Partial<FleetUnit> | null; customer_id?: string; engines: Engine[]; hoursLastUpdated?: string | null; onSaveAsync: (u: Partial<FleetUnit>) => Promise<void>; onClose: () => void }) {
-  const [form, setForm] = useState<Partial<FleetUnit>>(initial || { customer_id: customer_id || '', unit_number: '', nickname: '', engine_id: engines[0]?.engine_id || null, type: '', make: '', model: '', year: '', serial_number: '', current_hours: 0, notes: '' });
+function UnitForm({ initial, customer_id, engines, hoursLastUpdated, defaultUse = 'service', onSaveAsync, onClose }: { initial: Partial<FleetUnit> | null; customer_id?: string; engines: Engine[]; hoursLastUpdated?: string | null; defaultUse?: 'service' | 'filters'; onSaveAsync: (u: Partial<FleetUnit>) => Promise<void>; onClose: () => void }) {
+  const [form, setForm] = useState<Partial<FleetUnit>>(initial || { customer_id: customer_id || '', unit_number: '', nickname: '', engine_id: defaultUse === 'filters' ? null : engines[0]?.engine_id || null, type: '', make: '', model: '', year: '', serial_number: '', current_hours: 0, notes: '', equipment_use: defaultUse });
+  const use = form.equipment_use || 'service';
+  const setUse = (u: 'service' | 'filters') => setForm(p => ({
+    ...p, equipment_use: u,
+    // A new filters-only machine has no engine; switching a new one to servicing picks the first engine like before
+    ...(!initial?.unit_id ? { engine_id: u === 'filters' ? null : (p.engine_id || engines[0]?.engine_id || null) } : {}),
+  }));
+  const isNew = !initial?.unit_id;
   return (
-    <ModalShell title={initial?.unit_id ? 'Edit Unit' : 'Add Fleet Unit'} onClose={onClose} onSave={() => onSaveAsync(form)} saveDisabled={!form.unit_number}>
-      <div className="fr">
-        <div className="fld"><label>Unit Number</label><input value={form.unit_number || ''} onChange={e => setForm(p => ({ ...p, unit_number: e.target.value }))} placeholder="e.g. I-14" autoFocus /></div>
-        <div className="fld"><label>Nickname</label><input value={form.nickname || ''} onChange={e => setForm(p => ({ ...p, nickname: e.target.value }))} placeholder="Tub Truck" /></div>
+    <ModalShell title={isNew ? 'Add Equipment' : 'Edit Equipment'} onClose={onClose} onSave={() => onSaveAsync(form)} saveDisabled={!form.unit_number?.trim()}>
+      <div className="section-hdr">What is this equipment for?</div>
+      <div className="chips" role="radiogroup" aria-label="Equipment use">
+        <button type="button" className={`chip${use === 'service' ? ' on' : ''}`} onClick={() => setUse('service')}>For servicing (oil changes)</button>
+        <button type="button" className={`chip${use === 'filters' ? ' on' : ''}`} onClick={() => setUse('filters')}>Filters only</button>
       </div>
-      <div className="fld"><label>Engine</label>
-        <select value={form.engine_id || ''} onChange={e => setForm(p => ({ ...p, engine_id: e.target.value || null }))}>
-          <option value="">— No engine —</option>
-          {engines.map(en => <option key={en.engine_id} value={en.engine_id}>{en.name}</option>)}
-        </select>
-      </div>
-      <div className="fr">
-        <div className="fld"><label>Type</label><input value={form.type || ''} onChange={e => setForm(p => ({ ...p, type: e.target.value }))} placeholder="Tractor, Harvester..." /></div>
-        <div className="fld"><label>Make</label><input value={form.make || ''} onChange={e => setForm(p => ({ ...p, make: e.target.value }))} /></div>
-      </div>
-      <div className="fr">
-        <div className="fld"><label>Model</label><input value={form.model || ''} onChange={e => setForm(p => ({ ...p, model: e.target.value }))} /></div>
-        <div className="fld"><label>Year</label><input value={form.year || ''} onChange={e => setForm(p => ({ ...p, year: e.target.value }))} /></div>
-      </div>
-      <div className="fld"><label>Serial Number</label><input value={form.serial_number || ''} onChange={e => setForm(p => ({ ...p, serial_number: e.target.value }))} /></div>
-      <div className="fr">
-        <div className="fld"><label>Engine Hours</label><input type="number" value={form.current_hours || 0} onChange={e => setForm(p => ({ ...p, current_hours: Number(e.target.value) || 0 }))} />
-          {hoursLastUpdated && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Last updated: {hoursLastUpdated}</p>}
-        </div>
-        <div className="fld"><label>Hours at Last Service</label><input type="number" value={(form as any).previous_hours || 0} onChange={e => setForm(p => ({ ...p, previous_hours: Number(e.target.value) || 0 } as any))} />
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Used to calculate fluid hours on oil slips. Auto-updates after each completed work order.</p>
-        </div>
-      </div>
-      <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+      {use === 'filters' ? (
+        <>
+          <div className="fld"><label>Equipment Name</label><input value={form.unit_number || ''} onChange={e => setForm(p => ({ ...p, unit_number: e.target.value }))} placeholder="e.g. Kubota M7 tractor" autoFocus /></div>
+          <div className="fld"><label>Serial Number (optional)</label><input value={form.serial_number || ''} onChange={e => setForm(p => ({ ...p, serial_number: e.target.value }))} /></div>
+          <p style={{ fontSize: 11.5, color: 'var(--tx3)' }}>Filters-only equipment just needs a name. After saving, add the filters it takes on its page so you can reorder in one click.</p>
+        </>
+      ) : (
+        <>
+          <div className="fr">
+            <div className="fld"><label>Unit Number</label><input value={form.unit_number || ''} onChange={e => setForm(p => ({ ...p, unit_number: e.target.value }))} placeholder="e.g. I-14" autoFocus /></div>
+            <div className="fld"><label>Nickname</label><input value={form.nickname || ''} onChange={e => setForm(p => ({ ...p, nickname: e.target.value }))} placeholder="Tub Truck" /></div>
+          </div>
+          <div className="fld"><label>Engine</label>
+            <select value={form.engine_id || ''} onChange={e => setForm(p => ({ ...p, engine_id: e.target.value || null }))}>
+              <option value="">— No engine —</option>
+              {engines.map(en => <option key={en.engine_id} value={en.engine_id}>{en.name}</option>)}
+            </select>
+          </div>
+          <div className="fr">
+            <div className="fld"><label>Type</label><input value={form.type || ''} onChange={e => setForm(p => ({ ...p, type: e.target.value }))} placeholder="Tractor, Harvester..." /></div>
+            <div className="fld"><label>Make</label><input value={form.make || ''} onChange={e => setForm(p => ({ ...p, make: e.target.value }))} /></div>
+          </div>
+          <div className="fr">
+            <div className="fld"><label>Model</label><input value={form.model || ''} onChange={e => setForm(p => ({ ...p, model: e.target.value }))} /></div>
+            <div className="fld"><label>Year</label><input value={form.year || ''} onChange={e => setForm(p => ({ ...p, year: e.target.value }))} /></div>
+          </div>
+          <div className="fld"><label>Serial Number</label><input value={form.serial_number || ''} onChange={e => setForm(p => ({ ...p, serial_number: e.target.value }))} /></div>
+          <div className="fr">
+            <div className="fld"><label>Engine Hours</label><input type="number" value={form.current_hours || 0} onChange={e => setForm(p => ({ ...p, current_hours: Number(e.target.value) || 0 }))} />
+              {hoursLastUpdated && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Last updated: {hoursLastUpdated}</p>}
+            </div>
+            <div className="fld"><label>Hours at Last Service</label><input type="number" value={(form as any).previous_hours || 0} onChange={e => setForm(p => ({ ...p, previous_hours: Number(e.target.value) || 0 } as any))} />
+              <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Used to calculate fluid hours on oil slips. Auto-updates after each completed work order.</p>
+            </div>
+          </div>
+          <div className="fld"><label>Notes</label><textarea value={form.notes || ''} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} /></div>
+        </>
+      )}
     </ModalShell>
   );
 }
@@ -1710,8 +1732,10 @@ export default function OilTrackApp({ user }: { user: User }) {
                   return (
                   <tr key={u.unit_id} onClick={() => nav('unit', u.unit_id, u.unit_number)}>
                     <td style={{ fontWeight: 700, color: 'var(--ac)' }}>{u.unit_number}</td>
-                    <td>{u.nickname || u.type}{u.make ? ` — ${u.make} ${u.model || ''}` : ''}</td>
-                    <td><span className="tag tb">{getEngine(u.engine_id)?.name || '—'}</span></td>
+                    <td>{u.equipment_use === 'filters'
+                      ? <span style={{ color: 'var(--tx2)' }}>{u.serial_number ? `S/N ${u.serial_number}` : ''}</span>
+                      : <>{u.nickname || u.type}{u.make ? ` — ${u.make} ${u.model || ''}` : ''}</>}</td>
+                    <td>{u.equipment_use === 'filters' ? <span className="tag tg">Filters only</span> : <span className="tag tb">{getEngine(u.engine_id)?.name || '—'}</span>}</td>
                     <td className="m">
                       {u.current_hours > 0 ? u.current_hours.toLocaleString() : '—'}
                       {lastWO?.completed_at && <div style={{ fontSize: 10, color: 'var(--tx3)', fontWeight: 400, marginTop: 2 }}>{new Date(lastWO.completed_at).toLocaleDateString()}</div>}
@@ -1819,6 +1843,37 @@ export default function OilTrackApp({ user }: { user: User }) {
     const c = getCustomer(u.customer_id);
     const uTpls = templatesForUnit(u.unit_id);
     const uWOs = workOrders.filter(w => w.unit_id === curId);
+
+    // Filters-only equipment: just the name, serial, and the filters it takes
+    if (u.equipment_use === 'filters') {
+      return (
+        <>
+          <div className="card">
+            <div className="cust-hd" style={{ marginBottom: 8 }}>
+              <div>
+                <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-.03em' }}>{u.unit_number}</div>
+                <div style={{ fontSize: 12, color: 'var(--tx2)', marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {c?.name} <span className="tag tg">Filters only</span>
+                </div>
+              </div>
+              <button className="btn bs" onClick={() => setModal({ t: 'editUnit', d: u })}>{IC(iEdit, 14)} Edit</button>
+            </div>
+            <div>
+              <label style={{ fontSize: 10, color: 'var(--tx3)', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600, display: 'block' }}>Serial</label>
+              <p style={{ fontSize: 13 }}>{u.serial_number || '—'}</p>
+            </div>
+          </div>
+          <MachineFilters unit={u} nav={nav} toast={showToast} confirm={confirmAction} />
+          {uWOs.length > 0 && (
+            <div className="card">
+              <div className="ch"><h3>Service History ({uWOs.length})</h3></div>
+              <p style={{ fontSize: 12, color: 'var(--tx2)' }}>This machine has past oil change work orders. Switch it to &ldquo;For servicing&rdquo; with Edit to see and create them.</p>
+            </div>
+          )}
+        </>
+      );
+    }
+
     return (
       <>
         <div className="card">
@@ -3075,9 +3130,11 @@ export default function OilTrackApp({ user }: { user: User }) {
         .filter(w => w.unit_id === editingUnitId && w.status === 'complete' && w.completed_at)
         .sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || ''))[0] : null;
       const hoursLastUpdated = lastWO?.completed_at ? new Date(lastWO.completed_at).toLocaleDateString() : null;
-      return (<UnitForm initial={modal.d || null} customer_id={modal.customer_id} engines={engines} hoursLastUpdated={hoursLastUpdated} onClose={() => setModal(null)} onSaveAsync={async (form) => {
-        if (modal.t === 'addUnit') { await createUnit.mutateAsync(form); showToast('Unit added'); }
-        else { await updateUnit.mutateAsync({ unit_id: (modal.d as FleetUnit).unit_id, updates: form }); showToast('Unit updated'); }
+      const unitCustomer = getCustomer(modal.customer_id || (modal.d as FleetUnit | null)?.customer_id || '');
+      return (<UnitForm initial={modal.d || null} customer_id={modal.customer_id} engines={engines} hoursLastUpdated={hoursLastUpdated}
+        defaultUse={unitCustomer?.customer_type === 'filter_only' ? 'filters' : 'service'} onClose={() => setModal(null)} onSaveAsync={async (form) => {
+        if (modal.t === 'addUnit') { await createUnit.mutateAsync(form); showToast('Equipment added'); }
+        else { await updateUnit.mutateAsync({ unit_id: (modal.d as FleetUnit).unit_id, updates: form }); showToast('Equipment updated'); }
         setModal(null);
       }} />);
     }

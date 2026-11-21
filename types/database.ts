@@ -124,6 +124,8 @@ export interface FleetUnit {
   model: string;
   year: string;
   serial_number: string;
+  // 'service' = oil change equipment (engine, hours, templates); 'filters' = filters only (name + serial)
+  equipment_use: 'service' | 'filters';
   current_hours: number;
   notes: string;
   created_at: string;
