@@ -287,9 +287,9 @@ export async function buildFilterQuotePdfBlob(args: {
   const t = calculateFilterOrderTotals(items, order.tax_rate_percent);
   const logo = await loadLogo(company?.logo_url);
 
-  // Palette matched to the Complete Fleet Solutions logo: royal blue + black
-  const NAVY: [number, number, number] = [26, 16, 160];
-  const ACCENT: [number, number, number] = [26, 16, 160];
+  // Palette: a softer, muted blue (lighter and calmer than the logo's royal blue) + dark gray text
+  const NAVY: [number, number, number] = [84, 112, 158];
+  const ACCENT: [number, number, number] = [84, 112, 158];
   const INK: [number, number, number] = [17, 24, 39];
   const MUTED: [number, number, number] = [107, 114, 128];
   const SOFT: [number, number, number] = [243, 245, 248];
@@ -427,7 +427,7 @@ export async function buildFilterQuotePdfBlob(args: {
 
   // ── 90-day disclaimer ──
   const dy = totalsBottom + 22;
-  doc.setFillColor(238, 239, 252);
+  doc.setFillColor(241, 244, 249);
   doc.setDrawColor(...ACCENT).setLineWidth(0.75);
   doc.roundedRect(ml, dy, pw - ml - mr, 34, 3, 3, 'FD');
   doc.setFont('helvetica', 'bold').setFontSize(9).setTextColor(...ACCENT);
