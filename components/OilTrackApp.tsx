@@ -947,6 +947,22 @@ function EditInvoiceNumberForm({
   );
 }
 
+// Shrink an uploaded logo (max 1000px wide) and turn it into a data URL that can be
+// saved with the company settings and drawn on PDFs.
+async function logoFileToDataUrl(file: File): Promise<string> {
+  const src = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const im = new Image(); im.onload = () => resolve(im); im.onerror = reject; im.src = src;
+  });
+  const scale = Math.min(1, 1000 / img.naturalWidth);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
+  canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
 // =============================================
 // SETTINGS FORM
 // =============================================
@@ -967,6 +983,26 @@ function SettingsForm({ settings, onSaveAsync }: { settings: CompanySettings | n
       <div className="card">
         <div className="ch"><h3>Company Settings</h3></div>
         <p style={{ fontSize: 12, color: 'var(--tx2)', marginBottom: 14 }}>Your business info. This will appear on invoices and work orders.</p>
+        <div className="fld">
+          <label>Logo (shown on quotes)</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {form.logo_url
+              ? <img src={form.logo_url} alt="Company logo" style={{ maxHeight: 64, maxWidth: 220, objectFit: 'contain', background: '#fff', border: '1px solid var(--bd2)', borderRadius: 6, padding: 4 }} />
+              : <span style={{ fontSize: 12, color: 'var(--tx3)' }}>No logo yet</span>}
+            <label className="btn bs" style={{ cursor: 'pointer', textTransform: 'none', letterSpacing: 0, color: 'var(--tx)', fontSize: 12, margin: 0 }}>
+              {form.logo_url ? 'Change logo' : 'Upload logo'}
+              <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: 'none' }} onChange={async e => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                try { const url = await logoFileToDataUrl(file); setForm(p => ({ ...p, logo_url: url })); }
+                catch { setToast({ msg: 'Could not read that image. Try a PNG or JPG.', err: true }); setTimeout(() => setToast(null), 4000); }
+              }} />
+            </label>
+            {form.logo_url && <button type="button" className="btn bs bg" onClick={() => setForm(p => ({ ...p, logo_url: '' }))}>Remove</button>}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>Click Save Settings after uploading.</p>
+        </div>
         <div className="fld"><label>Company Name</label><input value={form.company_name || ''} onChange={e => setForm(p => ({ ...p, company_name: e.target.value }))} /></div>
         <div className="fld"><label>Address</label><textarea value={form.address || ''} onChange={e => setForm(p => ({ ...p, address: e.target.value }))} placeholder="Street or PO Box&#10;City, State ZIP" style={{ minHeight: 60, fontFamily: "'Outfit',sans-serif" }} /></div>
         <div className="fr">

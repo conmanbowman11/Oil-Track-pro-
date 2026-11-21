@@ -252,6 +252,208 @@ export async function buildFilterInvoicePdfBlob(args: {
   return doc.output('blob');
 }
 
+// ─────────────────────────────────────────────
+// Filter QUOTE PDF — a presentation layout (not the mailing/window-envelope
+// invoice layout): logo, professional colors, and a 90-day price disclaimer.
+// ─────────────────────────────────────────────
+export const QUOTE_VALID_DAYS = 90;
+
+// Load the company logo (a saved data URL, or a web link) as a PNG data URL with its size
+async function loadLogo(url?: string | null): Promise<{ data: string; w: number; h: number } | null> {
+  if (!url) return null;
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.onload = () => resolve(im);
+      im.onerror = reject;
+      im.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext('2d')!.drawImage(img, 0, 0);
+    return { data: canvas.toDataURL('image/png'), w: img.naturalWidth, h: img.naturalHeight };
+  } catch { return null; }
+}
+
+export async function buildFilterQuotePdfBlob(args: {
+  order: FilterOrder; items: FilterOrderItem[]; customer?: Customer; contact?: CustomerContact;
+  units: FleetUnit[]; company?: CompanySettings | null;
+}): Promise<Blob> {
+  const { order, items, customer: c, contact, units, company } = args;
+  const { default: jsPDF } = await import('jspdf');
+  const autoTableMod: any = await import('jspdf-autotable');
+  const autoTable = autoTableMod.default || autoTableMod;
+  const t = calculateFilterOrderTotals(items, order.tax_rate_percent);
+  const logo = await loadLogo(company?.logo_url);
+
+  // Palette matched to the Complete Fleet Solutions logo: royal blue + black
+  const NAVY: [number, number, number] = [26, 16, 160];
+  const ACCENT: [number, number, number] = [26, 16, 160];
+  const INK: [number, number, number] = [17, 24, 39];
+  const MUTED: [number, number, number] = [107, 114, 128];
+  const SOFT: [number, number, number] = [243, 245, 248];
+  const GREEN: [number, number, number] = [45, 122, 58];
+
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  const ml = 40, mr = 40;
+  const today = todayISO();
+  const validUntil = addDaysISO(today, QUOTE_VALID_DAYS);
+
+  // ── Header: logo (or company name) left, QUOTE block right ──
+  let leftY = 40;
+  if (logo) {
+    const maxW = 170, maxH = 70;
+    const scale = Math.min(maxW / logo.w, maxH / logo.h);
+    const w = logo.w * scale, h = logo.h * scale;
+    doc.addImage(logo.data, 'PNG', ml, leftY, w, h);
+    leftY += h + 10;
+  } else {
+    doc.setFont('helvetica', 'bold').setFontSize(18).setTextColor(...NAVY);
+    doc.text(company?.company_name || 'Your Company', ml, leftY + 16);
+    leftY += 28;
+  }
+  doc.setFont('helvetica', 'normal').setFontSize(8.5).setTextColor(...MUTED);
+  const coLines = [
+    ...(logo && company?.company_name ? [company.company_name] : []),
+    ...(company?.address ? company.address.split('\n') : []),
+    [company?.phone, company?.email].filter(Boolean).join('  ·  '),
+  ].filter(Boolean);
+  coLines.forEach(line => { doc.text(line, ml, leftY); leftY += 11; });
+
+  doc.setFont('helvetica', 'bold').setFontSize(28).setTextColor(...NAVY);
+  doc.text('QUOTE', pw - mr, 62, { align: 'right' });
+  const meta: [string, string][] = [['Quote #', orderLabel(order)], ['Date', fmtDate(today)], ['Valid until', fmtDate(validUntil)]];
+  meta.forEach(([k, v], i) => {
+    const yy = 84 + i * 14;
+    doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(...MUTED);
+    doc.text(k, pw - mr - 90, yy, { align: 'right' });
+    doc.setFont('helvetica', 'bold').setTextColor(...INK);
+    doc.text(v, pw - mr, yy, { align: 'right' });
+  });
+
+  // Accent rule
+  const ruleY = Math.max(leftY + 6, 136);
+  doc.setDrawColor(...ACCENT).setLineWidth(2);
+  doc.line(ml, ruleY, pw - mr, ruleY);
+
+  // ── Prepared for / Questions boxes ──
+  const boxY = ruleY + 16;
+  const boxW = (pw - ml - mr - 16) / 2;
+  const forLines = [
+    contact?.name || c?.contact_name || '',
+    ...(c?.billing_address ? c.billing_address.split('\n') : []),
+    contact?.phone || c?.phone || '',
+    contact?.email || c?.email || '',
+  ].filter(Boolean);
+  const qLines = [
+    company?.company_name || '',
+    company?.phone ? `Phone: ${company.phone}` : '',
+    company?.email ? `Email: ${company.email}` : '',
+  ].filter(Boolean);
+  const boxH = 34 + Math.max(forLines.length + 1, qLines.length) * 12;
+  doc.setFillColor(...SOFT);
+  doc.roundedRect(ml, boxY, boxW, boxH, 4, 4, 'F');
+  doc.roundedRect(ml + boxW + 16, boxY, boxW, boxH, 4, 4, 'F');
+  doc.setFont('helvetica', 'bold').setFontSize(7.5).setTextColor(...ACCENT);
+  doc.text('PREPARED FOR', ml + 12, boxY + 16);
+  doc.text('QUESTIONS? CONTACT', ml + boxW + 28, boxY + 16);
+  doc.setFont('helvetica', 'bold').setFontSize(11).setTextColor(...INK);
+  doc.text(c?.name || '', ml + 12, boxY + 32);
+  doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(...INK);
+  forLines.forEach((l, i) => doc.text(l, ml + 12, boxY + 46 + i * 12));
+  qLines.forEach((l, i) => doc.text(l, ml + boxW + 28, boxY + 32 + i * 12));
+
+  // ── Line items ──
+  const hasMachines = items.some(i => i.unit_id);
+  const machineOf = (i: FilterOrderItem) => units.find(x => x.unit_id === i.unit_id)?.unit_number || '';
+  const head = ['Part #', 'Description', ...(hasMachines ? ['Machine'] : []), 'Qty', 'Retail', 'Discount', 'Price', 'Total'];
+  const body = items.map(i => [
+    i.part_number, i.description, ...(hasMachines ? [machineOf(i)] : []), String(i.quantity),
+    Number(i.retail_price) > 0 ? formatMoney(i.retail_price) : '', Number(i.retail_price) > 0 ? itemDiscountText(i) : '',
+    formatMoney(i.unit_price), formatMoney(round2(i.quantity * i.unit_price)),
+  ]);
+  const n = hasMachines ? 1 : 0;
+  const right = { halign: 'right' as const };
+  autoTable(doc, {
+    startY: boxY + boxH + 20,
+    head: [head], body,
+    theme: 'striped',
+    styles: { fontSize: 9, cellPadding: 5, textColor: INK, lineColor: [229, 231, 235], lineWidth: 0 },
+    headStyles: { fillColor: NAVY, textColor: 255, fontStyle: 'bold', fontSize: 8.5 },
+    alternateRowStyles: { fillColor: SOFT },
+    columnStyles: {
+      0: { cellWidth: 66, fontStyle: 'bold' },
+      ...(hasMachines ? { 2: { cellWidth: 50 } } : {}),
+      [2 + n]: { ...right, cellWidth: 30 }, [3 + n]: { ...right, cellWidth: 54 }, [4 + n]: { ...right, cellWidth: 50 },
+      [5 + n]: { ...right, cellWidth: 54 }, [6 + n]: { ...right, cellWidth: 62, fontStyle: 'bold' },
+    },
+    margin: { left: ml, right: mr, bottom: 70 },
+    // line the number column headings up with the numbers
+    didParseCell: (data: any) => { if (data.section === 'head' && data.column.index >= 2 + n) data.cell.styles.halign = 'right'; },
+  });
+  let cy = ((doc as any).lastAutoTable.finalY || 300) + 18;
+
+  // Keep the totals + disclaimer together on one page
+  const blockH = 150 + (order.notes ? 40 : 0);
+  if (cy + blockH > ph - 60) { doc.addPage(); cy = 50; }
+
+  // ── Totals ──
+  const tx = pw - mr - 210, tw = 210;
+  const row = (label: string, value: string, color: [number, number, number] = INK) => {
+    doc.setFont('helvetica', 'normal').setFontSize(9.5).setTextColor(...color);
+    doc.text(label, tx + 10, cy); doc.text(value, tx + tw - 10, cy, { align: 'right' });
+    cy += 16;
+  };
+  if (t.savings > 0) row('Parts discount savings', `-${formatMoney(t.savings)}`, GREEN);
+  row('Subtotal', formatMoney(t.subtotal));
+  row(`Tax (${order.tax_rate_percent}%)`, formatMoney(t.tax_amount));
+  doc.setFillColor(...NAVY);
+  doc.roundedRect(tx, cy - 11, tw, 26, 3, 3, 'F');
+  doc.setFont('helvetica', 'bold').setFontSize(12).setTextColor(255);
+  doc.text('TOTAL', tx + 10, cy + 6); doc.text(formatMoney(t.total), tx + tw - 10, cy + 6, { align: 'right' });
+  const totalsBottom = cy + 15;
+
+  // Notes (left of the totals)
+  if (order.notes) {
+    const nw = tx - ml - 20;
+    doc.setFont('helvetica', 'bold').setFontSize(7.5).setTextColor(...ACCENT);
+    doc.text('NOTES', ml, totalsBottom - 60);
+    doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(...INK);
+    doc.text(doc.splitTextToSize(order.notes, nw), ml, totalsBottom - 46);
+  }
+
+  // ── 90-day disclaimer ──
+  const dy = totalsBottom + 22;
+  doc.setFillColor(238, 239, 252);
+  doc.setDrawColor(...ACCENT).setLineWidth(0.75);
+  doc.roundedRect(ml, dy, pw - ml - mr, 34, 3, 3, 'FD');
+  doc.setFont('helvetica', 'bold').setFontSize(9).setTextColor(...ACCENT);
+  doc.text('Prices are good for 90 days.', ml + 12, dy + 14);
+  doc.setFont('helvetica', 'normal').setTextColor(...INK);
+  doc.text(`This quote is valid through ${fmtDate(validUntil)}. After that date, prices may change.`, ml + 12, dy + 26);
+
+  // ── Footer band on every page ──
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFillColor(...NAVY);
+    doc.rect(0, ph - 34, pw, 34, 'F');
+    doc.setFont('helvetica', 'normal').setFontSize(8.5).setTextColor(255);
+    const foot = [company?.company_name, company?.phone, company?.email].filter(Boolean).join('   ·   ');
+    doc.text(foot || 'Thank you for your business', pw / 2, ph - 14, { align: 'center' });
+    if (pages > 1) doc.text(`Page ${i} of ${pages}`, pw - mr, ph - 14, { align: 'right' });
+  }
+  return doc.output('blob');
+}
+
+export function filterQuoteFileName(o: FilterOrder, c?: Customer): string {
+  const who = (c?.name || 'customer').replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 30);
+  return `Quote_${orderLabel(o)}_${who}.pdf`;
+}
+
 export function filterInvoiceFileName(o: FilterOrder, c?: Customer): string {
   const who = (c?.name || 'customer').replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 30);
   return `${o.invoice_number ? `INV-${o.invoice_number}` : orderLabel(o)}_${who}.pdf`;
@@ -811,6 +1013,16 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
   // The line's list price (retail − discount saved on the line); null on lines saved before discount pricing
   const listPrice = (i: FilterOrderItem) => Number(i.retail_price) > 0 ? discountedPrice(i.retail_price, i.discount_pct) : null;
 
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const downloadQuote = async () => {
+    setQuoteBusy(true);
+    try {
+      const blob = await buildFilterQuotePdfBlob({ order: o, items, customer: c, contact, units, company });
+      const saveAs = await loadSaveAs();
+      saveAs(blob, filterQuoteFileName(o, c));
+    } catch (err: any) { toast(`Quote failed: ${err?.message || 'Unknown error'}`, true); }
+    finally { setQuoteBusy(false); }
+  };
   const downloadPdf = async () => {
     setPdfBusy(true);
     try {
@@ -846,6 +1058,7 @@ export function FilterOrderDetail({ orderId, nav, back, toast, confirm }: { orde
               <button className={`btn bs ${o.billed ? 'bg' : 'bp'}`} onClick={() => bill(o, !o.billed)}>{IC(ICONS.bill, 13)} {o.billed ? 'Mark Unbilled' : 'Mark Billed'}</button>
             )}
             <button className="btn bs" onClick={downloadPdf} disabled={pdfBusy}>{IC(ICONS.print, 13)} {pdfBusy ? 'Building…' : 'Invoice PDF'}</button>
+            <button className="btn bs" onClick={downloadQuote} disabled={quoteBusy}>{IC(ICONS.note, 13)} {quoteBusy ? 'Building…' : 'Create Quote'}</button>
             {o.billed && <button className="btn bs" onClick={() => setInvEdit(true)}>{IC(ICONS.edit, 13)} INV #</button>}
             <button className="btn bs" onClick={() => setFuOpen(true)}>{IC(ICONS.bell, 13)} Follow up</button>
             {!['paid', 'cancelled'].includes(o.status) && (
